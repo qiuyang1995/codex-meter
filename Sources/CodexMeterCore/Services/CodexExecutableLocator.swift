@@ -34,6 +34,8 @@ public struct CodexExecutableLocator: Sendable {
             "\(home)/.local/bin/codex",
             "\(home)/.npm-global/bin/codex",
             "\(home)/.codex/plugins/.plugin-appserver/codex",
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            "\(home)/Applications/ChatGPT.app/Contents/Resources/codex",
             "\(home)/.volta/bin/codex",
             "\(home)/.cargo/bin/codex"
         ])
