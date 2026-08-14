@@ -49,6 +49,22 @@ public final class CodexQuotaService: ObservableObject {
             }
     }
 
+#if DEBUG
+    /// 仅供预览 / 截图渲染注入模拟状态，不触发任何网络或子进程。
+    public func injectPreviewState(
+        snapshot: CodexQuotaSnapshot?,
+        history: [QuotaHistoryPoint],
+        connectionState: CodexConnectionState,
+        lastSuccessfulRefresh: Date?
+    ) {
+        self.snapshot = snapshot
+        self.history = history
+        self.connectionState = connectionState
+        self.lastSuccessfulRefresh = lastSuccessfulRefresh
+        self.planType = snapshot?.planType
+    }
+#endif
+
     public func start() {
         stopped = false
         persist = store.load()

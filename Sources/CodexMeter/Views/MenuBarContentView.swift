@@ -7,20 +7,21 @@ struct MenuBarContentView: View {
     var onOpenSettings: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HeaderView(
                 state: viewModel.connectionState,
                 severity: viewModel.severity,
                 onSettings: onOpenSettings
             )
+            .padding(.bottom, 2)
 
             content
 
             footer
         }
-        .padding(18)
+        .padding(16)
         .frame(width: MeterTheme.popoverWidth)
-        .background(.regularMaterial)
+        .background(MeterTheme.popoverBackground)
     }
 
     @ViewBuilder
@@ -37,63 +38,90 @@ struct MenuBarContentView: View {
                 },
                 onChoosePath: chooseExecutable
             )
+            .meterCard(padding: 14)
         } else if viewModel.showsQuota {
-            QuotaHeroView(
+            StatCardsView(
+                todayUsedText: viewModel.todayUsedText,
+                weekUsedText: viewModel.usedText,
                 remainingText: viewModel.remainingText,
-                remainingValue: viewModel.remainingValue,
-                usedValue: viewModel.usedValue,
-                severity: viewModel.severity,
-                resetDateText: viewModel.resetDateText,
+                paceTitle: viewModel.pace.title,
+                updatedText: viewModel.updatedText,
                 resetCountdownText: viewModel.resetCountdownText
             )
 
-            UsagePaceView(
+            PlanCardView(
+                planName: viewModel.planName,
+                usedPercent: viewModel.usedValue,
                 usedText: viewModel.usedText,
-                elapsedPercent: viewModel.elapsedPercent,
-                pace: viewModel.pace
+                usedBadgeText: viewModel.usedPercentBadgeText,
+                severity: viewModel.severity,
+                refreshScheduleText: viewModel.refreshScheduleText
             )
 
-            UsageTrendView(points: viewModel.history)
+            UsageTrendView(points: viewModel.dailyUsage)
+
+            if let alert = viewModel.alertText {
+                AlertBannerView(text: alert)
+            }
         } else {
             ErrorStateView(message: viewModel.lastErrorMessage ?? "暂时无法获取额度") {
                 viewModel.refresh()
             }
+            .meterCard(padding: 14)
         }
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            Button {
-                viewModel.refresh()
-            } label: {
-                HStack(spacing: 5) {
+        HStack(spacing: 0) {
+            Button(action: { viewModel.refresh() }) {
+                HStack(spacing: 7) {
                     if viewModel.isRefreshing {
                         ProgressView()
                             .controlSize(.small)
-                            .scaleEffect(0.7)
+                            .scaleEffect(0.6)
+                            .frame(width: 14, height: 14)
                     } else {
                         Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13, weight: .semibold))
                     }
-                    Text("刷新")
+                    Text("刷新数据")
+                        .font(.system(size: 13, weight: .medium))
                 }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .disabled(viewModel.isRefreshing)
             .help("立即读取 Codex 周额度")
 
-            Text(viewModel.updatedText)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            Divider()
+                .frame(height: 22)
 
-            Spacer()
-
-            Button("打开 Codex", action: openCodex)
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .help("打开本机 Codex")
+            Button(action: openCodex) {
+                HStack(spacing: 7) {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MeterTheme.accent)
+                    Text("查看详情")
+                        .font(.system(size: 13, weight: .medium))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("打开本机 Codex")
         }
-        .font(.system(size: 12.5))
-        .padding(.top, 2)
+        .background(
+            MeterTheme.cardBackground,
+            in: RoundedRectangle(cornerRadius: MeterTheme.cardRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: MeterTheme.cardRadius, style: .continuous)
+                .strokeBorder(MeterTheme.cardBorder, lineWidth: 1)
+        )
     }
 
     private func chooseExecutable() {

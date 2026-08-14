@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static var sharedDelegate: AppDelegate?
 
     static func main() {
+#if DEBUG
+        if SnapshotRenderer.runIfRequested() { return }
+#endif
         let app = NSApplication.shared
         let delegate = AppDelegate()
         sharedDelegate = delegate
