@@ -21,13 +21,14 @@ final class StatusItemController: NSObject {
 
         popover.behavior = .transient
         popover.animates = true
-        popover.contentSize = NSSize(width: MeterTheme.popoverWidth, height: 500)
         let root = MenuBarContentView(viewModel: viewModel, onOpenSettings: { [weak self] in
             self?.popover.performClose(nil)
             onOpenSettings()
         })
         let hosting = NSHostingController(rootView: root)
-        hosting.view.frame = NSRect(x: 0, y: 0, width: MeterTheme.popoverWidth, height: 500)
+        // 让 popover 跟随 SwiftUI 内容的真实尺寸；写死高度会导致弹出后
+        // 内容撑大、popover 向上扩展盖住菜单栏图标。
+        hosting.sizingOptions = [.preferredContentSize]
         popover.contentViewController = hosting
 
         if let button = statusItem.button {
