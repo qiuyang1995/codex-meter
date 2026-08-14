@@ -8,6 +8,7 @@ xcuserdata/
 *.xcscmblueprint
 CodexMeter.app/
 dist/
+*.zip
 *.moved-aside
 *.hmap
 *.ipa
