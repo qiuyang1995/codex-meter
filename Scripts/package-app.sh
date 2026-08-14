@@ -12,7 +12,14 @@ else
 fi
 
 echo "==> Building CodexMeter ($SWIFT_CONFIG)"
-swift build -c "$SWIFT_CONFIG" --product CodexMeter
+if [[ "$SWIFT_CONFIG" == "release" ]]; then
+  # 体积优先：-Osize + 链接期裁剪未用代码
+  swift build -c release --product CodexMeter \
+    -Xswiftc -Osize \
+    -Xlinker -dead_strip
+else
+  swift build -c "$SWIFT_CONFIG" --product CodexMeter
+fi
 
 BIN="$ROOT/.build/$SWIFT_CONFIG/CodexMeter"
 if [[ ! -x "$BIN" ]]; then
@@ -29,6 +36,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN" "$APP/Contents/MacOS/CodexMeter"
+if [[ "$SWIFT_CONFIG" == "release" ]]; then
+  # 去掉调试符号与本地符号表，进一步瘦身
+  strip -Sx "$APP/Contents/MacOS/CodexMeter" 2>/dev/null || true
+fi
 cp "$ROOT/Sources/CodexMeter/Resources/Info.plist" "$APP/Contents/Info.plist"
 
 if [[ -d "$ROOT/Sources/CodexMeter/Resources/Assets.xcassets" ]] && command -v actool >/dev/null 2>&1; then
