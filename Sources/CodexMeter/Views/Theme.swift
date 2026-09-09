@@ -3,8 +3,8 @@ import SwiftUI
 import CodexMeterCore
 
 enum MeterTheme {
-    static let popoverWidth: CGFloat = 380
-    static let cardRadius: CGFloat = 12
+    static let popoverWidth: CGFloat = 340
+    static let cardRadius: CGFloat = 9
 
     // MARK: - 原型图配色（浅色为准，深色做等价映射）
 

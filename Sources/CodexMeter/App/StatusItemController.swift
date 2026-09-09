@@ -58,14 +58,15 @@ final class StatusItemController: NSObject {
     func refreshIcon() {
         let showPercent = settings.menuBarDisplayMode == .iconAndPercent
         let image = MenuBarIconRenderer.image(
-            severity: viewModel.severity,
-            remainingText: viewModel.remainingText,
+            severity: viewModel.menuBarSeverity,
+            remainingText: viewModel.menuBarRemainingText,
             showPercent: showPercent
         )
         statusItem.button?.image = image
         statusItem.button?.imagePosition = .imageOnly
-        if let remaining = viewModel.snapshot?.remainingPercent {
-            statusItem.button?.toolTip = "Codex 本周剩余 \(PercentageFormatting.display(remaining))"
+        if let snapshot = viewModel.snapshot {
+            let window = snapshot.fiveHourRemainingPercent != nil ? "5 小时" : "本周"
+            statusItem.button?.toolTip = "Codex \(window)剩余 \(viewModel.menuBarRemainingText)"
         } else {
             statusItem.button?.toolTip = "Codex Meter"
         }

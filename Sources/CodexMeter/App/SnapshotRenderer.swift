@@ -26,14 +26,17 @@ enum SnapshotRenderer {
 
         let now = Date()
         let calendar = Calendar.current
-        let resetAt = now.addingTimeInterval(4 * 86_400)
+        let resetAt = now.addingTimeInterval(3 * 86_400)
         let snapshot = CodexQuotaSnapshot(
-            planType: "pro",
-            usedPercent: 51,
-            remainingPercent: 49,
+            planType: "plus",
+            usedPercent: 58,
+            remainingPercent: 42,
             resetAt: resetAt,
             windowMinutes: 10_080,
-            fetchedAt: now
+            fetchedAt: now,
+            fiveHourUsedPercent: 32,
+            fiveHourRemainingPercent: 68,
+            fiveHourResetAt: now.addingTimeInterval(2 * 3600 + 24 * 60)
         )
         var history: [QuotaHistoryPoint] = []
         for (offset, used) in [8.0, 15, 24, 33, 39, 45].enumerated() {
@@ -49,6 +52,16 @@ enum SnapshotRenderer {
         service.injectPreviewState(
             snapshot: snapshot,
             history: history,
+            dailyTokenUsage: [
+                82_340, 126_780, 94_210, 188_460, 142_990, 231_570, 167_320
+            ].enumerated().map { offset, tokens in
+                let day = calendar.date(byAdding: .day, value: offset - 6, to: now) ?? now
+                return AccountTokenUsageDailyBucket(
+                    startDate: Self.usageDateFormatter.string(from: day),
+                    tokens: Int64(tokens)
+                )
+            },
+            localTodayUsage: CommandLine.arguments.contains("--snapshot-live") ? LocalTodayTokenUsage(day: calendar.startOfDay(for: now), tokens: 9_876_543) : nil,
             connectionState: .connected,
             lastSuccessfulRefresh: now
         )
@@ -92,5 +105,12 @@ enum SnapshotRenderer {
             exit(1)
         }
     }
+
+    private static let usageDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 }
 #endif

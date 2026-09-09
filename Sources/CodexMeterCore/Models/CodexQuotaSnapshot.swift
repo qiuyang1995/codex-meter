@@ -9,6 +9,9 @@ public struct CodexQuotaSnapshot: Equatable, Sendable, Codable {
     public var fetchedAt: Date
     public var limitId: String?
     public var accountType: String?
+    public var fiveHourUsedPercent: Double?
+    public var fiveHourRemainingPercent: Double?
+    public var fiveHourResetAt: Date?
 
     public init(
         planType: String?,
@@ -18,7 +21,10 @@ public struct CodexQuotaSnapshot: Equatable, Sendable, Codable {
         windowMinutes: Int?,
         fetchedAt: Date,
         limitId: String? = nil,
-        accountType: String? = nil
+        accountType: String? = nil,
+        fiveHourUsedPercent: Double? = nil,
+        fiveHourRemainingPercent: Double? = nil,
+        fiveHourResetAt: Date? = nil
     ) {
         self.planType = planType
         self.usedPercent = PercentageFormatting.clamped(usedPercent)
@@ -28,6 +34,9 @@ public struct CodexQuotaSnapshot: Equatable, Sendable, Codable {
         self.fetchedAt = fetchedAt
         self.limitId = limitId
         self.accountType = accountType
+        self.fiveHourUsedPercent = fiveHourUsedPercent.map(PercentageFormatting.clamped)
+        self.fiveHourRemainingPercent = fiveHourRemainingPercent.map(PercentageFormatting.clamped)
+        self.fiveHourResetAt = fiveHourResetAt
     }
 
     public var severity: QuotaSeverity {

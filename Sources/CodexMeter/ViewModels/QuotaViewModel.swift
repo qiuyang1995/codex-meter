@@ -9,13 +9,28 @@ final class QuotaViewModel: ObservableObject {
     let settings: AppSettings
 
     @Published private(set) var tick = Date()
+    @Published private(set) var tokenUsageByDay: [Date: Int64] = [:]
 
+    private var historicalTokenUsageByDay: [Date: Int64] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
 
     init(service: CodexQuotaService, settings: AppSettings) {
         self.service = service
         self.settings = settings
+
+        // 仅在接口数据变化时建立日期索引；悬停和周/月切换只查表。
+        service.$dailyTokenUsage
+            .removeDuplicates()
+            .map { TokenUsageStatistics.byDay($0) }
+            .combineLatest(service.$localTodayUsage.removeDuplicates())
+            .sink { [weak self] historical, local in
+                self?.historicalTokenUsageByDay = historical
+                var usage = historical
+                if let local, Calendar.current.isDateInToday(local.day) { usage[local.day] = local.tokens }
+                self?.tokenUsageByDay = usage
+            }
+            .store(in: &cancellables)
 
         service.objectWillChange
             .receive(on: RunLoop.main)
@@ -46,10 +61,27 @@ final class QuotaViewModel: ObservableObject {
     var lastErrorMessage: String? { service.lastErrorMessage }
     var executablePath: String? { service.executableURL?.path }
     var planType: String? { service.planType ?? service.snapshot?.displayPlan }
+    var dailyTokenUsage: [AccountTokenUsageDailyBucket] { service.dailyTokenUsage }
 
     var remainingText: String {
         guard let snapshot else { return "—" }
         return PercentageFormatting.display(snapshot.remainingPercent)
+    }
+
+    var menuBarRemainingText: String {
+        guard let snapshot else { return "—" }
+        return PercentageFormatting.display(snapshot.fiveHourRemainingPercent ?? snapshot.remainingPercent)
+    }
+
+    var menuBarSeverity: QuotaSeverity {
+        guard let snapshot else { return .unknown }
+        return QuotaSeverity.from(remainingPercent: snapshot.fiveHourRemainingPercent ?? snapshot.remainingPercent)
+    }
+
+    private var startOfWeek: Date {
+        var calendar = Calendar.current
+        calendar.firstWeekday = 2
+        return calendar.dateInterval(of: .weekOfYear, for: tick)!.start
     }
 
     var usedText: String {
@@ -67,6 +99,29 @@ final class QuotaViewModel: ObservableObject {
 
     var severity: QuotaSeverity {
         snapshot?.severity ?? .unknown
+    }
+
+    var fiveHourUsedValue: Double? { snapshot?.fiveHourUsedPercent }
+
+    var fiveHourUsedText: String? {
+        snapshot?.fiveHourUsedPercent.map(PercentageFormatting.display)
+    }
+
+    var fiveHourRemainingText: String? {
+        snapshot?.fiveHourRemainingPercent.map(PercentageFormatting.display)
+    }
+
+    var fiveHourSeverity: QuotaSeverity {
+        guard let remaining = snapshot?.fiveHourRemainingPercent else { return .unknown }
+        return QuotaSeverity.from(remainingPercent: remaining)
+    }
+
+    var fiveHourResetText: String? {
+        quotaResetText(for: snapshot?.fiveHourResetAt)
+    }
+
+    var weeklyResetText: String {
+        quotaResetText(for: snapshot?.resetAt) ?? "刷新时间未知"
     }
 
     var elapsedPercent: Double? {
@@ -122,22 +177,26 @@ final class QuotaViewModel: ObservableObject {
         return "\(Int(snapshot.usedPercent.rounded()))%"
     }
 
-    /// 今日消耗：当前已用减去今天 0 点前最后一个采样点。
-    var todayUsedPercent: Double? {
-        guard let snapshot else { return nil }
-        let calendar = Calendar.current
-        let startOfDay = calendar.startOfDay(for: tick)
-        let baseline = history.last(where: { $0.timestamp < startOfDay })
-            ?? history.first(where: { $0.timestamp >= startOfDay })
-        guard let baseline else { return nil }
-        let delta = snapshot.usedPercent - baseline.usedPercent
-        // 周期在今天内发生了重置时，本周期已用即今日消耗
-        return delta < 0 ? snapshot.usedPercent : delta
+    var todayTokenTitle: String {
+        guard let local = service.localTodayUsage, Calendar.current.isDateInToday(local.day) else { return "今日消耗" }
+        return "今日 · 本机实时"
     }
 
-    var todayUsedText: String {
-        guard let value = todayUsedPercent else { return "—" }
-        return PercentageFormatting.display(value)
+    var todayTokenText: String? {
+        guard !tokenUsageByDay.isEmpty else { return nil }
+        let today = Calendar.current.startOfDay(for: tick)
+        guard let tokens = tokenUsageByDay[today] else { return nil }
+        return TokenFormatting.display(Double(tokens))
+    }
+
+    /// 本周 token 按本地时区从周一零点累计至今日。
+    var weekTokenText: String? {
+        guard !tokenUsageByDay.isEmpty else { return nil }
+        let today = Calendar.current.startOfDay(for: tick)
+        let total = tokenUsageByDay.reduce(Int64(0)) { partial, entry in
+            partial + (entry.key >= startOfWeek && entry.key <= today ? entry.value : 0)
+        }
+        return TokenFormatting.display(Double(total))
     }
 
     var refreshScheduleText: String {
@@ -147,29 +206,33 @@ final class QuotaViewModel: ObservableObject {
         return "每周刷新一次 · 下次刷新: \(Self.weekdayClockFormatter.string(from: resetAt))"
     }
 
-    /// 近 7 天每日用量（取每天最后一个采样点的已用百分比）。
-    var dailyUsage: [DailyUsagePoint] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: tick)
-        var result: [DailyUsagePoint] = []
-        for offset in -6...0 {
-            guard let day = calendar.date(byAdding: .day, value: offset, to: today),
-                  let nextDay = calendar.date(byAdding: .day, value: 1, to: day) else { continue }
-            var value = history
-                .last(where: { $0.timestamp >= day && $0.timestamp < nextDay })?
-                .usedPercent
-            if offset == 0, let snapshot {
-                value = snapshot.usedPercent
-            }
-            if let value {
-                result.append(DailyUsagePoint(
-                    day: day,
-                    label: Self.dayLabelFormatter.string(from: day),
-                    value: value
-                ))
-            }
+    private func quotaResetText(for date: Date?) -> String? {
+        guard let date else { return nil }
+        let remaining = DateFormatting.remaining(until: date, now: tick)
+        let countdown = remaining.hasPrefix("还有") ? String(remaining.dropFirst(2)) + "后重置" : "即将重置"
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = Calendar.current.isDate(date, inSameDayAs: tick) ? "HH:mm" : "M月d日 HH:mm"
+        return "\(countdown)（\(formatter.string(from: date))）"
+    }
+
+    var lifetimeTokenText: String {
+        let historicalTotal = service.lifetimeTokens ?? (historicalTokenUsageByDay.isEmpty ? nil : historicalTokenUsageByDay.values.reduce(0, +))
+        var total = historicalTotal
+        if let local = service.localTodayUsage, Calendar.current.isDateInToday(local.day) {
+            // Replace the server's delayed today bucket instead of adding it twice.
+            total = max((historicalTotal ?? 0) - (historicalTokenUsageByDay[local.day] ?? 0), 0) + local.tokens
         }
-        return result
+        return total.map { TokenFormatting.display(Double($0)) } ?? "—"
+    }
+
+    var lifetimeTokenCaption: String {
+        if let local = service.localTodayUsage, Calendar.current.isDateInToday(local.day) { return "含本机今日用量" }
+        return service.lifetimeTokens == nil ? "已获取的历史" : "全部历史"
+    }
+
+    var peakTokenText: String {
+        tokenUsageByDay.values.max().map { TokenFormatting.display(Double($0)) } ?? "—"
     }
 
     /// 预警条文案；无需预警时为 nil。
@@ -204,13 +267,6 @@ final class QuotaViewModel: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "E HH:mm"
-        return formatter
-    }()
-
-    private static let dayLabelFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M/d"
         return formatter
     }()
 
@@ -250,10 +306,25 @@ final class QuotaViewModel: ObservableObject {
     }
 }
 
-struct DailyUsagePoint: Identifiable, Equatable {
-    let day: Date
-    let label: String
-    let value: Double
+enum TokenFormatting {
+    static func display(_ value: Double) -> String {
+        if value >= 100_000_000 {
+            return Self.decimal(value / 100_000_000) + "亿"
+        }
+        if value >= 10_000 {
+            return Self.decimal(value / 10_000) + "万"
+        }
+        return Self.integerFormatter.string(from: NSNumber(value: Int64(value.rounded()))) ?? "0"
+    }
 
-    var id: Date { day }
+    private static func decimal(_ value: Double) -> String {
+        String(format: "%.1f", value).replacingOccurrences(of: ".0", with: "")
+    }
+
+    private static let integerFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
 }

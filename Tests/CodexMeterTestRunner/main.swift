@@ -3,9 +3,11 @@ import CodexMeterCore
 
 @main
 enum TestRunner {
-    static func main() {
+    static func main() async {
         var failures = 0
         let cases: [(String, () throws -> Void)] = [
+            ("usage.calendar", testTokenCalendar),
+            ("usage.lifetime", testLifetimeTokens),
             ("parser.weeklyOnly", testWeeklyOnlyWindow),
             ("parser.prefersWeekly", testPrefersWeeklyOverFiveHourWindow),
             ("parser.weeklyPrimary", testWeeklyInPrimary),
@@ -17,6 +19,9 @@ enum TestRunner {
             ("parser.snakeCase", testSnakeCaseWindowMinutes),
             ("parser.byLimitId", testWeeklyInRateLimitsByLimitId),
             ("parser.remainingFallback", testMissingUsedPercentFallsBackToRemaining),
+            ("parser.fiveHourRemainingFallback", testFiveHourRemainingFallback),
+            ("parser.tokenUsage", testTokenUsageBuckets),
+            ("parser.emptyTokenUsage", testEmptyTokenUsage),
             ("pace.normalBehind", testNormalWhenUsageBehindTime),
             ("pace.normalSlightlyAhead", testNormalWhenUsageSlightlyAhead),
             ("pace.slightlyFast", testSlightlyFast),
@@ -43,8 +48,16 @@ enum TestRunner {
             }
         }
 
+        do {
+            try await testLocalTokenUsage()
+            print("PASS  usage.localIncremental")
+        } catch {
+            failures += 1
+            print("FAIL  usage.localIncremental: \(error)")
+        }
+        let total = cases.count + 1
         print("----")
-        print("\(cases.count - failures) passed, \(failures) failed, \(cases.count) total")
+        print("\(total - failures) passed, \(failures) failed, \(total) total")
         if failures > 0 {
             exit(1)
         }
@@ -73,6 +86,7 @@ func testWeeklyOnlyWindow() throws {
     """)
     try expect(snapshot.usedPercent == 32, "used should be 32")
     try expect(snapshot.remainingPercent == 68, "remaining should be 68")
+    try expect(snapshot.fiveHourUsedPercent == nil, "5-hour window should be absent")
     try expect(snapshot.windowMinutes == 10080, "window should be weekly")
     try expect(snapshot.resetAt?.timeIntervalSince1970 == 1_787_205_408, "reset timestamp")
 }
@@ -84,6 +98,9 @@ func testPrefersWeeklyOverFiveHourWindow() throws {
     try expect(snapshot.windowMinutes == 10080, "should pick weekly")
     try expect(snapshot.usedPercent == 32, "used should come from weekly")
     try expect(snapshot.remainingPercent == 68, "remaining should be 68")
+    try expect(snapshot.fiveHourUsedPercent == 80, "5-hour used should be 80")
+    try expect(snapshot.fiveHourRemainingPercent == 20, "5-hour remaining should be 20")
+    try expect(snapshot.fiveHourResetAt?.timeIntervalSince1970 == 1_786_617_000, "5-hour reset timestamp")
 }
 
 func testWeeklyInPrimary() throws {
@@ -159,6 +176,30 @@ func testMissingUsedPercentFallsBackToRemaining() throws {
     """)
     try expect(snapshot.remainingPercent == 72, "remaining")
     try expect(snapshot.usedPercent == 28, "used derived")
+}
+
+func testFiveHourRemainingFallback() throws {
+    let snapshot = try snapshotJSON("""
+    {"rateLimits":{"primary":{"remainingPercent":65,"windowDurationMins":300,"resetsAt":1786617000},"secondary":{"usedPercent":28,"windowDurationMins":10080}}}
+    """)
+    try expect(snapshot.fiveHourUsedPercent == 35, "5-hour used derived from remaining")
+    try expect(snapshot.fiveHourRemainingPercent == 65, "5-hour remaining")
+}
+
+func testTokenUsageBuckets() throws {
+    let data = Data("""
+    {"dailyUsageBuckets":[{"startDate":"2026-08-16","tokens":12345},{"startDate":"2026-08-17","tokens":67890}],"summary":{"lifetimeTokens":80235}}
+    """.utf8)
+    let buckets = try CodexQuotaParser.parseTokenUsage(data: data)
+    try expect(buckets.count == 2, "two daily buckets")
+    try expect(buckets[0] == AccountTokenUsageDailyBucket(startDate: "2026-08-16", tokens: 12_345), "first bucket")
+    try expect(buckets[1].tokens == 67_890, "second bucket")
+}
+
+func testEmptyTokenUsage() throws {
+    let data = Data(#"{"dailyUsageBuckets":null,"summary":{}}"#.utf8)
+    let buckets = try CodexQuotaParser.parseTokenUsage(data: data)
+    try expect(buckets.isEmpty, "null daily buckets should be empty")
 }
 
 func testNormalWhenUsageBehindTime() throws {
@@ -310,4 +351,103 @@ func testRecordsFirstPointAndRespectsInterval() throws {
     let later = CodexQuotaSnapshot(planType: "plus", usedPercent: 20, remainingPercent: 80, resetAt: Date(timeIntervalSince1970: 86_400), windowMinutes: 10_080, fetchedAt: Date(timeIntervalSince1970: 1_000 + 16 * 60))
     state = store.record(snapshot: later, previous: state)
     try expect(state.history.count == 2, "second point recorded")
+}
+
+func testTokenCalendar() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        calendar.date(from: DateComponents(year: year, month: month, day: day, hour: 12))!
+    }
+    let september = TokenUsagePeriod.month.days(containing: date(2026, 9, 9), calendar: calendar)
+    try expect(september.count == 30, "September length")
+    try expect(calendar.component(.weekday, from: september[0]) == 3, "September starts Tuesday")
+    let sunday = TokenUsagePeriod.week.days(containing: date(2026, 9, 13), calendar: calendar)
+    try expect(sunday.count == 7 && calendar.component(.day, from: sunday[0]) == 7, "Sunday stays in Monday week")
+    let monday = TokenUsagePeriod.week.days(containing: date(2026, 9, 14), calendar: calendar)
+    try expect(calendar.component(.day, from: monday[0]) == 14, "Monday begins new week")
+    try expect(TokenUsagePeriod.month.days(containing: date(2024, 2, 9), calendar: calendar).count == 29, "leap month")
+    let dst = TokenUsagePeriod.week.days(containing: date(2026, 3, 8), calendar: calendar)
+    try expect(dst.count == 7 && dst.allSatisfy { calendar.component(.hour, from: $0) == 0 }, "DST retains local midnight")
+    let year = TokenUsagePeriod.week.days(containing: date(2027, 1, 1), calendar: calendar)
+    try expect(calendar.component(.year, from: year[0]) == 2026, "week crosses year")
+    let buckets = TokenUsageStatistics.byDay([.init(startDate: "2026-09-09", tokens: 0), .init(startDate: "bad", tokens: 10)], calendar: calendar)
+    try expect(buckets.count == 1 && buckets[calendar.startOfDay(for: date(2026, 9, 9))] == 0, "zero distinct from missing and local date preserved")
+}
+
+func testLifetimeTokens() throws {
+    let data = Data(#"{"summary":{"lifetimeTokens":4490000000}}"#.utf8)
+    let total = try CodexQuotaParser.parseLifetimeTokens(data: data)
+    try expect(total == 4_490_000_000, "lifetime total beyond 32-bit")
+    let absent = try CodexQuotaParser.parseLifetimeTokens(data: Data("{}".utf8))
+    try expect(absent == nil, "missing total remains unavailable")
+    let negative = try CodexQuotaParser.parseLifetimeTokens(data: Data(#"{"summary":{"lifetimeTokens":-1}}"#.utf8))
+    try expect(negative == nil, "invalid total ignored")
+}
+
+func testLocalTokenUsage() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let directory = root.appendingPathComponent("sessions")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+    let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 9, hour: 12))!
+    let file = directory.appendingPathComponent("old-session.jsonl")
+    func event(_ timestamp: String, _ total: Int, _ last: Int) -> String {
+        "{\"timestamp\":\"\(timestamp)\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":\(total)},\"last_token_usage\":{\"total_tokens\":\(last)}}}}"
+    }
+    let metadata = "{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"openai\"}}\n"
+    let before = event("2026-09-08T15:59:00.000Z", 100, 100)
+    let first = event("2026-09-08T16:01:00.000Z", 160, 60)
+    var contents = metadata + before + "\n" + first + "\n" + first + "\n"
+    try Data(contents.utf8).write(to: file)
+    try FileManager.default.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+    let tracker = LocalTokenUsageTracker(root: root)
+    var sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 60, "local midnight baseline and duplicate cumulative record")
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 60, "unchanged file does not count twice")
+
+    let partial = event("2026-09-09T01:00:00.000Z", 200, 40)
+    let handle = try FileHandle(forWritingTo: file)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(partial.utf8))
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 60, "partial final line waits for newline")
+    try handle.write(contentsOf: Data("\n".utf8))
+    try handle.close()
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 100, "incremental appended line")
+    contents += partial + "\n"
+
+    let archive = root.appendingPathComponent("archived_sessions")
+    try FileManager.default.createDirectory(at: archive, withIntermediateDirectories: true)
+    try Data(contents.utf8).write(to: archive.appendingPathComponent("copy.jsonl"))
+    // A fork with a copied first record must not count its inherited cumulative total.
+    try Data((metadata + first + "\n").utf8).write(to: directory.appendingPathComponent("fork.jsonl"))
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 100, "archived/forked event copies deduplicate")
+    let restarted = LocalTokenUsageTracker(root: root)
+    sample = await restarted.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 100, "app restart recovers today's count")
+
+    let other = metadata.replacingOccurrences(of: "openai", with: "other") + event("2026-09-09T02:00:00.000Z", 999, 999) + "\n"
+    try Data(other.utf8).write(to: directory.appendingPathComponent("other.jsonl"))
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 100, "other model providers excluded")
+    let reset = event("2026-09-09T03:00:00.000Z", 10, 10)
+    let append = try FileHandle(forWritingTo: file)
+    try append.seekToEnd()
+    try append.write(contentsOf: Data((reset + "\n" + reset + "\n").utf8))
+    try append.close()
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 110, "counter reset and repeated reset record")
+
+    let tomorrow = calendar.date(byAdding: .day, value: 1, to: now)!
+    sample = await tracker.sample(now: tomorrow, calendar: calendar)
+    try expect(sample?.tokens == 0 && sample?.day == calendar.startOfDay(for: tomorrow), "daily rollover")
+    let missing = LocalTokenUsageTracker(root: root.appendingPathComponent("missing"))
+    sample = await missing.sample(now: now, calendar: calendar)
+    try expect(sample == nil, "unavailable directory does not fabricate zero")
 }

@@ -19,6 +19,7 @@ struct CodexQuotaParserTests {
         let snapshot = try CodexQuotaParser.parseRateLimits(json: json)
         #expect(snapshot.usedPercent == 32)
         #expect(snapshot.remainingPercent == 68)
+        #expect(snapshot.fiveHourUsedPercent == nil)
         #expect(snapshot.windowMinutes == 10080)
         #expect(snapshot.resetAt?.timeIntervalSince1970 == 1_787_205_408)
     }
@@ -45,6 +46,9 @@ struct CodexQuotaParserTests {
         #expect(snapshot.windowMinutes == 10080)
         #expect(snapshot.usedPercent == 32)
         #expect(snapshot.remainingPercent == 68)
+        #expect(snapshot.fiveHourUsedPercent == 80)
+        #expect(snapshot.fiveHourRemainingPercent == 20)
+        #expect(snapshot.fiveHourResetAt?.timeIntervalSince1970 == 1_786_617_000)
     }
 
     @Test("weekly in primary")
@@ -227,5 +231,51 @@ struct CodexQuotaParserTests {
         let snapshot = try CodexQuotaParser.parseRateLimits(json: json)
         #expect(snapshot.remainingPercent == 72)
         #expect(snapshot.usedPercent == 28)
+    }
+
+    @Test("5-hour remainingPercent fallback")
+    func fiveHourRemainingPercentFallback() throws {
+        let json = """
+        {
+          "rateLimits": {
+            "primary": {
+              "remainingPercent": 65,
+              "windowDurationMins": 300,
+              "resetsAt": 1786617000
+            },
+            "secondary": {
+              "usedPercent": 28,
+              "windowDurationMins": 10080
+            }
+          }
+        }
+        """
+        let snapshot = try CodexQuotaParser.parseRateLimits(json: json)
+        #expect(snapshot.fiveHourUsedPercent == 35)
+        #expect(snapshot.fiveHourRemainingPercent == 65)
+    }
+
+    @Test("daily token usage buckets")
+    func dailyTokenUsageBuckets() throws {
+        let data = Data("""
+        {
+          "dailyUsageBuckets": [
+            {"startDate": "2026-08-16", "tokens": 12345},
+            {"startDate": "2026-08-17", "tokens": 67890}
+          ],
+          "summary": {"lifetimeTokens": 80235}
+        }
+        """.utf8)
+        let buckets = try CodexQuotaParser.parseTokenUsage(data: data)
+        #expect(buckets == [
+            AccountTokenUsageDailyBucket(startDate: "2026-08-16", tokens: 12_345),
+            AccountTokenUsageDailyBucket(startDate: "2026-08-17", tokens: 67_890)
+        ])
+    }
+
+    @Test("null daily token usage is empty")
+    func nullDailyTokenUsageIsEmpty() throws {
+        let data = Data(#"{"dailyUsageBuckets":null,"summary":{}}"#.utf8)
+        #expect(try CodexQuotaParser.parseTokenUsage(data: data).isEmpty)
     }
 }

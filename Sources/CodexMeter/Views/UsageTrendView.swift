@@ -1,146 +1,218 @@
 import SwiftUI
 import CodexMeterCore
 
-/// 原型图下方的"近 7 天用量"折线图卡片。
+/// 周/月日历热力图，每个日期格对应一天的 Token 用量。
 struct UsageTrendView: View {
-    let points: [DailyUsagePoint]
+    @ObservedObject var viewModel: QuotaViewModel
+    @State private var period: TokenUsagePeriod = {
+#if DEBUG
+        if CommandLine.arguments.contains("--snapshot-week") { return .week }
+#endif
+        return .month
+    }()
+    @State private var anchor: Date = {
+#if DEBUG
+        if CommandLine.arguments.contains("--snapshot-six-rows") {
+            return Calendar.current.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+        }
+#endif
+        return Date()
+    }()
+    @State private var selectedDay: Date?
+    @State private var hoveredDay: Date? = {
+#if DEBUG
+        if CommandLine.arguments.contains("--snapshot-hover") { return Calendar.current.startOfDay(for: Date()) }
+#endif
+        return nil
+    }()
+    private let calendar = Calendar.current
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 3), count: 7)
+
+    private var days: [Date] { period.days(containing: anchor, calendar: calendar) }
+    private var range: DateInterval { period.interval(containing: anchor, calendar: calendar) }
+    private var leadingBlanks: Int { (calendar.component(.weekday, from: range.start) + 5) % 7 }
+    private var usage: [Date: Int64] { viewModel.tokenUsageByDay }
+    private var today: Date { calendar.startOfDay(for: viewModel.tick) }
+    private var canGoForward: Bool { range.end <= today }
+    private var canGoBack: Bool { usage.keys.min().map { $0 < range.start } ?? false }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("近 7 天用量")
-                    .font(.system(size: 13.5, weight: .bold))
-                Spacer()
-                Text("单位: 额度 %")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+        let visibleDays = days
+        let indexedUsage = usage
+        let maximum = max(visibleDays.compactMap { indexedUsage[$0] }.max() ?? 0, 1)
+        let detailDay = selectedDay
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                summary("累计 Token", value: viewModel.lifetimeTokenText, caption: viewModel.lifetimeTokenCaption)
+                Divider().frame(height: 40)
+                summary("单日峰值", value: viewModel.peakTokenText, caption: "已获取的历史")
             }
-
-            if points.count >= 2 {
-                DailyUsageChart(points: points)
-                    .frame(height: 118)
+            Divider()
+            HStack {
+                Text("每日用量").font(.system(size: 13.2, weight: .semibold))
+                Spacer()
+                HStack(spacing: 2) {
+                    ForEach(TokenUsagePeriod.allCases, id: \.self) { item in
+                        Button {
+                            period = item
+                            selectedDay = nil
+                            hoveredDay = nil
+                        } label: {
+                            Text(item.rawValue)
+                                .font(.system(size: 11.0, weight: .medium))
+                                .foregroundStyle(period == item ? MeterTheme.accent : .secondary)
+                                .frame(width: 30, height: 20)
+                                .background(period == item ? MeterTheme.cardBackground : .clear,
+                                            in: RoundedRectangle(cornerRadius: 6))
+                                .contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        .accessibilityAddTraits(period == item ? [.isSelected] : [])
+                    }
+                }
+                .padding(2)
+                .background(MeterTheme.track.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+            }
+            if usage.isEmpty {
+                Text("暂无 Token 用量数据")
+                    .font(.system(size: 11.0)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 65)
             } else {
-                Text("开始记录后，这里会显示近 7 天的每日用量趋势")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 90)
-                    .multilineTextAlignment(.center)
+                HStack {
+                    navigationButton("chevron.left", enabled: canGoBack, offset: -1)
+                    Spacer()
+                    Text(periodTitle).font(.system(size: 11.0, weight: .semibold)).monospacedDigit()
+                    Spacer()
+                    navigationButton("chevron.right", enabled: canGoForward, offset: 1)
+                }
+                LazyVGrid(columns: columns, spacing: 3) {
+                    ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) {
+                        Text($0).font(.system(size: 9.4)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity).padding(.bottom, 1)
+                    }
+                    ForEach(0..<leadingBlanks, id: \.self) { _ in Color.clear.frame(height: 20) }
+                    ForEach(visibleDays, id: \.self) { day in
+                        dayCell(day, value: indexedUsage[day], maximum: maximum)
+                    }
+                    ForEach(0..<((7 - (leadingBlanks + days.count) % 7) % 7), id: \.self) { _ in
+                        Color.clear.frame(height: 20)
+                    }
+                }
+                HStack {
+                    Text(detailDay.map { dateLabel($0, format: "M月d日") } ?? "悬停查看 · 点击固定")
+                    Spacer(minLength: 3)
+                    Text(detailDay.map { day in
+                        day > today ? "尚未到来" : indexedUsage[day].map { "\(TokenFormatting.display(Double($0))) Tokens" } ?? "无用量记录"
+                    } ?? "")
+                }
+                .font(.system(size: 9.9)).monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(height: 13)
+                .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text("少")
+                    ForEach(0..<5) { level in
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(MeterTheme.blue.opacity(0.12 + Double(level) * 0.2))
+                            .frame(width: 8, height: 8)
+                    }
+                    Text("多")
+                    Spacer()
+                    Text("点击可固定详情")
+                }
+                .font(.system(size: 8.8)).foregroundStyle(.secondary)
             }
         }
-        .meterCard(padding: 14)
-        .accessibilityLabel("近 7 天每日用量趋势")
+    }
+
+    private func summary(_ title: String, value: String, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 9.9)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 22.0, weight: .semibold, design: .rounded))
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Text(caption).font(.system(size: 8.8)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func dayCell(_ day: Date, value: Int64?, maximum: Int64) -> some View {
+        let future = day > today
+        let intensity = value.map { 0.14 + 0.7 * Double($0) / Double(maximum) } ?? 0
+        let highlighted = (hoveredDay ?? selectedDay ?? today) == day
+        return Button { selectedDay = day } label: {
+            Text("\(calendar.component(.day, from: day))")
+                .font(.system(size: 9.9, weight: highlighted ? .semibold : .regular))
+                .foregroundStyle(future ? Color.secondary : (intensity > 0.6 ? .white : .primary))
+                .frame(maxWidth: .infinity).frame(height: 20)
+                .background(
+                    future || value == nil ? MeterTheme.track.opacity(0.35) : MeterTheme.blue.opacity(intensity),
+                    in: RoundedRectangle(cornerRadius: 5)
+                )
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(highlighted ? MeterTheme.accent : .clear, lineWidth: 1.5))
+        }
+        .buttonStyle(CalendarDayButtonStyle())
+        .disabled(future)
+        .onHover { inside in
+            if inside { hoveredDay = day }
+            else if hoveredDay == day { hoveredDay = nil }
+        }
+        .overlay(alignment: tooltipAlignment(day)) {
+            if hoveredDay == day {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(dateLabel(day, format: "M月d日"))
+                        .foregroundStyle(.secondary)
+                    Text(value.map { "\(TokenFormatting.display(Double($0))) Tokens" } ?? "无用量记录")
+                        .fontWeight(.semibold)
+                }
+                .font(.system(size: 11.0))
+                .padding(8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(MeterTheme.cardBorder, lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.12), radius: 5, y: 2)
+                .fixedSize()
+                .offset(y: -53)
+                .allowsHitTesting(false)
+            }
+        }
+        .zIndex(hoveredDay == day ? 1 : 0)
+        .accessibilityLabel("\(calendar.component(.month, from: day))月\(calendar.component(.day, from: day))日，\(value.map { "\($0) Tokens" } ?? "无用量记录")")
+    }
+
+    private func tooltipAlignment(_ day: Date) -> Alignment {
+        let column = (calendar.component(.weekday, from: day) + 5) % 7
+        if column < 2 { return .topLeading }
+        if column > 4 { return .topTrailing }
+        return .top
+    }
+
+    private var periodTitle: String {
+        if period == .month { return dateLabel(range.start, format: "yyyy年M月") }
+        let last = calendar.date(byAdding: .day, value: -1, to: range.end)!
+        return "\(dateLabel(range.start, format: "M月d日")) — \(dateLabel(last, format: "M月d日"))"
+    }
+
+    private func dateLabel(_ date: Date, format: String) -> String {
+        if format == "yyyy年M月" {
+            return "\(calendar.component(.year, from: date))年\(calendar.component(.month, from: date))月"
+        }
+        return "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日"
+    }
+
+    private func navigationButton(_ icon: String, enabled: Bool, offset: Int) -> some View {
+        Button {
+            anchor = calendar.date(byAdding: period == .month ? .month : .weekOfYear, value: offset, to: range.start)!
+            selectedDay = nil
+            hoveredDay = nil
+        } label: {
+            Image(systemName: icon).font(.system(size: 9.9, weight: .semibold))
+                .frame(width: 20, height: 20)
+                .background(MeterTheme.track.opacity(0.45), in: Circle())
+        }
+        .buttonStyle(.plain).disabled(!enabled)
+        .accessibilityLabel(offset < 0 ? "上一\(period.rawValue)" : "下一\(period.rawValue)")
     }
 }
 
-private struct DailyUsageChart: View {
-    let points: [DailyUsagePoint]
-
-    private let yLabelWidth: CGFloat = 24
-    private let xLabelHeight: CGFloat = 16
-
-    var body: some View {
-        GeometryReader { proxy in
-            let chartLeft = yLabelWidth + 6
-            let chartWidth = proxy.size.width - chartLeft - 6
-            let chartHeight = proxy.size.height - xLabelHeight
-            let yMax = yAxisMax
-            let gridValues = Array(stride(from: 0.0, through: yMax, by: 25.0))
-            let coords = points.enumerated().map { index, point -> CGPoint in
-                let x = chartLeft + chartWidth * CGFloat(index) / CGFloat(max(points.count - 1, 1))
-                let y = chartHeight * CGFloat(1 - point.value / yMax)
-                return CGPoint(x: x, y: y)
-            }
-
-            // 网格线与 Y 轴标签
-            ForEach(gridValues, id: \.self) { value in
-                let y = chartHeight * CGFloat(1 - value / yMax)
-                Path { path in
-                    path.move(to: CGPoint(x: chartLeft, y: y))
-                    path.addLine(to: CGPoint(x: chartLeft + chartWidth, y: y))
-                }
-                .stroke(MeterTheme.track, lineWidth: 0.5)
-
-                Text("\(Int(value))")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .frame(width: yLabelWidth, alignment: .trailing)
-                    .position(x: yLabelWidth / 2, y: y)
-            }
-
-            // 渐变面积
-            Path { path in
-                guard let first = coords.first, let last = coords.last else { return }
-                path.move(to: CGPoint(x: first.x, y: chartHeight))
-                path.addLine(to: first)
-                addSmoothLines(to: &path, through: coords)
-                path.addLine(to: CGPoint(x: last.x, y: chartHeight))
-                path.closeSubpath()
-            }
-            .fill(
-                LinearGradient(
-                    colors: [MeterTheme.accent.opacity(0.28), MeterTheme.accent.opacity(0.02)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-
-            // 折线
-            Path { path in
-                guard let first = coords.first else { return }
-                path.move(to: first)
-                addSmoothLines(to: &path, through: coords)
-            }
-            .stroke(MeterTheme.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-
-            // 数据点
-            ForEach(Array(coords.enumerated()), id: \.offset) { index, coord in
-                if index == coords.count - 1 {
-                    Circle()
-                        .strokeBorder(MeterTheme.accent, lineWidth: 2.5)
-                        .background(Circle().fill(MeterTheme.cardBackground))
-                        .frame(width: 11, height: 11)
-                        .position(coord)
-                } else {
-                    Circle()
-                        .fill(MeterTheme.accent)
-                        .frame(width: 5.5, height: 5.5)
-                        .position(coord)
-                }
-            }
-
-            // X 轴日期标签
-            ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
-                Text(point.label)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .position(x: coords[index].x, y: chartHeight + xLabelHeight / 2 + 3)
-            }
-        }
-    }
-
-    private var yAxisMax: Double {
-        let maxValue = points.map(\.value).max() ?? 0
-        let stepped = (maxValue / 25.0).rounded(.up) * 25.0
-        return min(100, max(75, stepped))
-    }
-
-    /// Catmull-Rom 平滑，贴近原型图的柔和曲线。
-    private func addSmoothLines(to path: inout Path, through coords: [CGPoint]) {
-        guard coords.count > 1 else { return }
-        for index in 1..<coords.count {
-            let current = coords[index]
-            let previous = coords[index - 1]
-            let before = index >= 2 ? coords[index - 2] : previous
-            let after = index + 1 < coords.count ? coords[index + 1] : current
-            let control1 = CGPoint(
-                x: previous.x + (current.x - before.x) / 6,
-                y: previous.y + (current.y - before.y) / 6
-            )
-            let control2 = CGPoint(
-                x: current.x - (after.x - previous.x) / 6,
-                y: current.y - (after.y - previous.y) / 6
-            )
-            path.addCurve(to: current, control1: control1, control2: control2)
-        }
+private struct CalendarDayButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? 0.75 : 1)
     }
 }

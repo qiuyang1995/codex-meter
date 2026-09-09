@@ -12,6 +12,13 @@ public final class CodexQuotaService: ObservableObject {
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var executableURL: URL?
     @Published public private(set) var planType: String?
+    @Published public private(set) var dailyTokenUsage: [AccountTokenUsageDailyBucket] = []
+
+    @Published public private(set) var localTodayUsage: LocalTodayTokenUsage?
+    private let localUsageTracker = LocalTokenUsageTracker()
+    private var localUsageTask: Task<Void, Never>?
+
+    @Published public private(set) var lifetimeTokens: Int64?
 
     public let settings: AppSettings
     public let locator: CodexExecutableLocator
@@ -54,11 +61,15 @@ public final class CodexQuotaService: ObservableObject {
     public func injectPreviewState(
         snapshot: CodexQuotaSnapshot?,
         history: [QuotaHistoryPoint],
+        dailyTokenUsage: [AccountTokenUsageDailyBucket] = [],
+        localTodayUsage: LocalTodayTokenUsage? = nil,
         connectionState: CodexConnectionState,
         lastSuccessfulRefresh: Date?
     ) {
         self.snapshot = snapshot
         self.history = history
+        self.dailyTokenUsage = dailyTokenUsage
+        self.localTodayUsage = localTodayUsage
         self.connectionState = connectionState
         self.lastSuccessfulRefresh = lastSuccessfulRefresh
         self.planType = snapshot?.planType
@@ -76,11 +87,21 @@ public final class CodexQuotaService: ObservableObject {
         }
         Task { await bootstrap(forceLocate: false) }
         restartPolling()
+        localUsageTask?.cancel()
+        localUsageTask = Task { [weak self, localUsageTracker] in
+            while !Task.isCancelled {
+                let usage = await localUsageTracker.sample()
+                guard let self, !self.stopped, !Task.isCancelled else { return }
+                if self.localTodayUsage != usage { self.localTodayUsage = usage }
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            }
+        }
     }
 
     public func shutdown() async {
         stopped = true
         pollTask?.cancel()
+        localUsageTask?.cancel()
         reconnectTask?.cancel()
         notificationListenTask?.cancel()
         refreshTask?.cancel()
@@ -192,6 +213,7 @@ public final class CodexQuotaService: ObservableObject {
 
             let result = try await client.request(method: "account/rateLimits/read", timeout: 30)
             try applyRateLimitResult(result, planHint: planHint, accountType: accountType)
+            await readTokenUsage()
             connectionState = .connected
             lastErrorMessage = nil
             planType = snapshot?.planType ?? planHint
@@ -200,6 +222,19 @@ public final class CodexQuotaService: ObservableObject {
             if isProcessError(error) {
                 scheduleReconnect()
             }
+        }
+    }
+
+    private func readTokenUsage() async {
+        do {
+            let result = try await client.request(method: "account/usage/read", timeout: 30)
+            let buckets = try CodexQuotaParser.parseTokenUsage(data: result)
+            let total = try CodexQuotaParser.parseLifetimeTokens(data: result)
+            dailyTokenUsage = buckets
+            lifetimeTokens = total
+        } catch {
+            // Token usage is additive; older Codex versions may not expose this method.
+            AppLog.quota.debug("Token usage unavailable: \(error.localizedDescription, privacy: .public)")
         }
     }
 

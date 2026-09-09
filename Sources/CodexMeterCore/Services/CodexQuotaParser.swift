@@ -1,6 +1,7 @@
 import Foundation
 
 public enum CodexQuotaParser {
+    public static let fiveHourWindowMinutes = 300
     public static let weeklyWindowMinutes = 10_080
 
     public static func parseRateLimits(
@@ -46,27 +47,24 @@ public enum CodexQuotaParser {
             throw CodexQuotaError.weeklyLimitMissing
         }
 
-        let used: Double
-        let remaining: Double
-        if let usedPercent = weekly.window.usedPercent {
-            used = PercentageFormatting.clamped(usedPercent)
-            remaining = PercentageFormatting.clamped(100 - used)
-        } else if let remainingPercent = weekly.window.remainingPercent {
-            remaining = PercentageFormatting.clamped(remainingPercent)
-            used = PercentageFormatting.clamped(100 - remaining)
-        } else {
+        guard let weeklyPercentages = percentages(for: weekly.window) else {
             throw CodexQuotaError.weeklyLimitMissing
         }
+        let fiveHour = selectWindow(minutes: fiveHourWindowMinutes, from: dto)
+        let fiveHourPercentages = fiveHour.flatMap { percentages(for: $0.window) }
 
         return CodexQuotaSnapshot(
             planType: weekly.planType ?? dto.planType ?? planTypeHint,
-            usedPercent: used,
-            remainingPercent: remaining,
+            usedPercent: weeklyPercentages.used,
+            remainingPercent: weeklyPercentages.remaining,
             resetAt: weekly.window.resetsAt,
             windowMinutes: weekly.window.windowMinutes ?? Self.weeklyWindowMinutes,
             fetchedAt: fetchedAt,
             limitId: weekly.limitId,
-            accountType: accountType
+            accountType: accountType,
+            fiveHourUsedPercent: fiveHourPercentages?.used,
+            fiveHourRemainingPercent: fiveHourPercentages?.remaining,
+            fiveHourResetAt: fiveHour?.window.resetsAt
         )
     }
 
@@ -81,6 +79,36 @@ public enum CodexQuotaParser {
         let type = JSONValue.string(account, keys: ["type"])
         let plan = JSONValue.string(account, keys: ["planType", "plan_type"])
         return (type, plan, requiresAuth, type != nil)
+    }
+
+    public static func parseTokenUsage(data: Data) throws -> [AccountTokenUsageDailyBucket] {
+        guard let object = try jsonObject(from: data) as? [String: Any] else {
+            throw CodexQuotaError.parseFailed
+        }
+        guard let rawBuckets = JSONValue.value(object, keys: ["dailyUsageBuckets", "daily_usage_buckets"]),
+              !(rawBuckets is NSNull) else {
+            return []
+        }
+        guard let buckets = JSONValue.array(rawBuckets) else {
+            throw CodexQuotaError.parseFailed
+        }
+        return buckets.compactMap { value in
+            guard let bucket = JSONValue.object(value),
+                  let startDate = JSONValue.string(bucket, keys: ["startDate", "start_date"]),
+                  let tokens = JSONValue.int(bucket, keys: ["tokens"]),
+                  tokens >= 0 else {
+                return nil
+            }
+            return AccountTokenUsageDailyBucket(startDate: startDate, tokens: Int64(tokens))
+        }
+    }
+
+    public static func parseLifetimeTokens(data: Data) throws -> Int64? {
+        guard let object = try jsonObject(from: data) as? [String: Any],
+              let summary = JSONValue.object(JSONValue.value(object, keys: ["summary"])),
+              let total = JSONValue.int(summary, keys: ["lifetimeTokens", "lifetime_tokens"]),
+              total >= 0 else { return nil }
+        return Int64(total)
     }
 
     public static func decodeDTO(from object: Any) -> CodexRateLimitDTO {
@@ -124,19 +152,38 @@ public enum CodexQuotaParser {
     private static func selectWeeklyWindow(
         from dto: CodexRateLimitDTO
     ) -> (window: CodexRateLimitWindowDTO, planType: String?, limitId: String?)? {
-        // Prefer the overall `codex` bucket, then any weekly window found anywhere.
+        selectWindow(minutes: weeklyWindowMinutes, from: dto)
+    }
+
+    private static func selectWindow(
+        minutes: Int,
+        from dto: CodexRateLimitDTO
+    ) -> (window: CodexRateLimitWindowDTO, planType: String?, limitId: String?)? {
+        // Prefer the overall `codex` bucket, then a matching window found anywhere.
         let preferred = dto.buckets.sorted { lhs, rhs in
             score(limitId: lhs.limitId) > score(limitId: rhs.limitId)
         }
 
         for bucket in preferred {
-            if let weekly = bucket.windows.first(where: isWeekly) {
-                return (weekly, bucket.planType ?? dto.planType, bucket.limitId)
+            if let window = bucket.windows.first(where: { $0.windowMinutes == minutes }) {
+                return (window, bucket.planType ?? dto.planType, bucket.limitId)
             }
         }
 
-        if let weekly = dto.windows.first(where: isWeekly) {
-            return (weekly, dto.planType, nil)
+        if let window = dto.windows.first(where: { $0.windowMinutes == minutes }) {
+            return (window, dto.planType, nil)
+        }
+        return nil
+    }
+
+    private static func percentages(for window: CodexRateLimitWindowDTO) -> (used: Double, remaining: Double)? {
+        if let usedPercent = window.usedPercent {
+            let used = PercentageFormatting.clamped(usedPercent)
+            return (used, PercentageFormatting.clamped(100 - used))
+        }
+        if let remainingPercent = window.remainingPercent {
+            let remaining = PercentageFormatting.clamped(remainingPercent)
+            return (PercentageFormatting.clamped(100 - remaining), remaining)
         }
         return nil
     }

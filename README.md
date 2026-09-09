@@ -26,8 +26,10 @@
 - 自动发现本机 `codex` 可执行文件
 - 持久化运行 `codex app-server`，通过 JSON-RPC 读取额度
 - 识别 10080 分钟（7 天）的 Weekly Limit
+- 同时识别 300 分钟（5 小时）和 10080 分钟（7 天）额度窗口
 - 使用 Codex 返回的真实 `resetsAt`，不会假设周一或周日刷新
 - 监听 `account/rateLimits/updated`，额度变化时立即更新
+- 读取 Codex 账户每日 token 用量，以周／月日历热力图展示
 - 1 / 5 / 10 / 30 分钟保险轮询，默认 5 分钟
 - 本地缓存最近快照与 30 天历史趋势
 - 剩余 30% / 15% / 5% 系统通知，同一周周期每个阈值只提醒一次
@@ -110,6 +112,7 @@ codex app-server --stdio
 | `account/read` | 账户类型与 Plan（只用于状态，不展示邮箱） |
 | `account/rateLimits/read` | 读取当前额度窗口 |
 | `account/rateLimits/updated` | 额度变化时的推送 |
+| `account/usage/read` | 读取个人中心中的每日 token 用量 |
 
 周额度识别方式：遍历返回的所有 rate limit window，找到
 
@@ -128,7 +131,7 @@ windowDurationMins == 10080
 - `rateLimits.primary` / `rateLimits.secondary`
 - `rateLimitsByLimitId`
 
-主界面只展示总体 Weekly Limit。5 小时额度或模型专属 bucket 不会铺到主界面。
+主界面展示 5 小时与周剩余额度，以及包含具体时刻的重置说明。今日、本周消耗只显示 Tokens，本周从本地时间周一开始累计。下方显示累计 Token、已获取历史中的单日峰值和可切换周／月的每日用量热力图；点击日期可查看精确用量。不支持每日用量接口时显示空状态。累计总量优先采用接口 summary.lifetimeTokens，缺少时明确标记为已获取历史的合计。
 
 ## 隐私说明
 
@@ -193,7 +196,15 @@ View 不直接启动 Process。额度 JSON 先进入 DTO / Parser，再变成 `C
 
 ## 版本
 
-- Version `1.0.0`
+- Version `1.1.0`
 - Build `1`
 - Bundle Identifier `com.local.CodexMeter`
 - Deployment Target macOS 13.0
+
+### 今日实时用量
+
+“今日 · 本机实时”每 5 秒增量读取 `$CODEX_HOME/sessions` 和 `archived_sessions`（默认 `~/.codex`）中的 OpenAI Codex `token_count` 记录。应用启动时补算当天，模型响应写入日志后更新，不是流式逐 Token 计数。今日及相关周合计／峰值使用该值；昨日及更早日期继续使用 Codex 官方统计，累计值避免重复加入官方当天桶。
+
+本机日志不包含其他设备、远程主机或云端任务，也不能完整按登录账号隔离。切换账号不会把本机日志自动拆成不同账户的今日用量。界面明确标注本机口径；日志不可读时不伪造实时数值。程序不修改会话日志、不上传其内容。
+
+日历悬浮提示使用原生 SwiftUI 悬浮层，和顶部统计卡统一采用万／亿 Tokens 格式；点击可固定详情。
