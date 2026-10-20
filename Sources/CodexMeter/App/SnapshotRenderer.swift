@@ -49,20 +49,25 @@ enum SnapshotRenderer {
             ))
         }
         history.append(QuotaHistoryPoint(snapshot: snapshot))
+        let previewTokens: [Int64] = CommandLine.arguments.contains("--snapshot-week")
+            ? (0..<180).map { Int64((($0 * 13) % 31 + 1) * 100_000) }
+            : [82_340, 126_780, 94_210, 188_460, 142_990, 231_570, 167_320]
         service.injectPreviewState(
-            snapshot: snapshot,
+            snapshot: CommandLine.arguments.contains("--snapshot-missing") ? nil : snapshot,
             history: history,
-            dailyTokenUsage: [
-                82_340, 126_780, 94_210, 188_460, 142_990, 231_570, 167_320
-            ].enumerated().map { offset, tokens in
-                let day = calendar.date(byAdding: .day, value: offset - 6, to: now) ?? now
+            dailyTokenUsage: previewTokens.enumerated().map { offset, tokens in
+                let day = calendar.date(byAdding: .day, value: offset - (previewTokens.count - 1), to: now) ?? now
                 return AccountTokenUsageDailyBucket(
                     startDate: Self.usageDateFormatter.string(from: day),
                     tokens: Int64(tokens)
                 )
             },
             localTodayUsage: CommandLine.arguments.contains("--snapshot-live") ? LocalTodayTokenUsage(day: calendar.startOfDay(for: now), tokens: 9_876_543) : nil,
-            connectionState: .connected,
+            resetCredits: CommandLine.arguments.contains("--snapshot-resets") ? RateLimitResetCredits(availableCount: 2, credits: [
+                RateLimitResetCredit(id: "preview-1", resetType: "codexRateLimits", status: "available", expiresAt: now.addingTimeInterval(18 * 86400)),
+                RateLimitResetCredit(id: "preview-2", resetType: "codexRateLimits", status: "available", expiresAt: now.addingTimeInterval(19 * 86400))
+            ]) : nil,
+            connectionState: CommandLine.arguments.contains("--snapshot-missing") ? .missingCLI : .connected,
             lastSuccessfulRefresh: now
         )
 

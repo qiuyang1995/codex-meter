@@ -1,17 +1,20 @@
 import Foundation
 
 public struct PersistedQuotaState: Codable, Equatable, Sendable {
+    public var accountId: String?
     public var lastSnapshot: CodexQuotaSnapshot?
     public var history: [QuotaHistoryPoint]
     public var lastSuccessfulRefresh: Date?
     public var notificationState: NotificationState
 
     public init(
+        accountId: String? = nil,
         lastSnapshot: CodexQuotaSnapshot? = nil,
         history: [QuotaHistoryPoint] = [],
         lastSuccessfulRefresh: Date? = nil,
         notificationState: NotificationState = NotificationState()
     ) {
+        self.accountId = accountId
         self.lastSnapshot = lastSnapshot
         self.history = history
         self.lastSuccessfulRefresh = lastSuccessfulRefresh
@@ -90,6 +93,12 @@ public final class HistoryStore: @unchecked Sendable {
         next.notificationState = notificationState
         save(next)
         return next
+    }
+
+    public func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        try? FileManager.default.removeItem(at: fileURL)
     }
 
     public func save(_ state: PersistedQuotaState) {

@@ -11,6 +11,7 @@ public final class CodexQuotaService: ObservableObject {
     @Published public private(set) var lastErrorMessage: String?
     @Published public private(set) var isRefreshing = false
     @Published public private(set) var executableURL: URL?
+    @Published public private(set) var accountId: String?
     @Published public private(set) var planType: String?
     @Published public private(set) var dailyTokenUsage: [AccountTokenUsageDailyBucket] = []
 
@@ -18,6 +19,7 @@ public final class CodexQuotaService: ObservableObject {
     private let localUsageTracker = LocalTokenUsageTracker()
     private var localUsageTask: Task<Void, Never>?
 
+    @Published public private(set) var resetCredits: RateLimitResetCredits?
     @Published public private(set) var lifetimeTokens: Int64?
 
     public let settings: AppSettings
@@ -63,6 +65,7 @@ public final class CodexQuotaService: ObservableObject {
         history: [QuotaHistoryPoint],
         dailyTokenUsage: [AccountTokenUsageDailyBucket] = [],
         localTodayUsage: LocalTodayTokenUsage? = nil,
+        resetCredits: RateLimitResetCredits? = nil,
         connectionState: CodexConnectionState,
         lastSuccessfulRefresh: Date?
     ) {
@@ -70,8 +73,10 @@ public final class CodexQuotaService: ObservableObject {
         self.history = history
         self.dailyTokenUsage = dailyTokenUsage
         self.localTodayUsage = localTodayUsage
+        self.resetCredits = resetCredits
         self.connectionState = connectionState
         self.lastSuccessfulRefresh = lastSuccessfulRefresh
+        self.accountId = nil
         self.planType = snapshot?.planType
     }
 #endif
@@ -79,13 +84,14 @@ public final class CodexQuotaService: ObservableObject {
     public func start() {
         stopped = false
         persist = store.load()
+        accountId = persist.accountId
         snapshot = persist.lastSnapshot
         history = persist.history
         lastSuccessfulRefresh = persist.lastSuccessfulRefresh
         if let last = persist.lastSnapshot {
             cycleDetector.lastConfirmed = last
         }
-        Task { await bootstrap(forceLocate: false) }
+        Task { await refresh() }
         restartPolling()
         localUsageTask?.cancel()
         localUsageTask = Task { [weak self, localUsageTracker] in
@@ -139,6 +145,7 @@ public final class CodexQuotaService: ObservableObject {
 
     private func bootstrap(forceLocate: Bool) async {
         guard stopped == false else { return }
+        resetCredits = nil
         connectionState = .detecting
         lastErrorMessage = nil
 
@@ -154,7 +161,7 @@ public final class CodexQuotaService: ObservableObject {
         }
         settings.cachedExecutable = found.path
         reconnectAttempt = 0
-        await connectAndRead(executable: found)
+        await connectAndRead(executable: found, forceRestart: forceLocate)
     }
 
     private func performRefresh(forceReconnect: Bool) async {
@@ -167,9 +174,9 @@ public final class CodexQuotaService: ObservableObject {
             reconnectAttempt = 0
             reconnectTask?.cancel()
             if let executableURL {
-                await connectAndRead(executable: executableURL)
+                await connectAndRead(executable: executableURL, forceRestart: forceReconnect)
             } else {
-                await bootstrap(forceLocate: true)
+                await bootstrap(forceLocate: false)
             }
             return
         }
@@ -178,11 +185,12 @@ public final class CodexQuotaService: ObservableObject {
         await readAccountAndLimits()
     }
 
-    private func connectAndRead(executable: URL) async {
+    private func connectAndRead(executable: URL, forceRestart: Bool = false) async {
         guard stopped == false else { return }
+        notificationListenTask?.cancel()
         connectionState = .connecting
         do {
-            _ = try await client.start(executable: executable)
+            _ = try await client.start(executable: executable, forceRestart: forceRestart)
             listenForNotifications()
             reconnectAttempt = 0
             connectionState = .reading
@@ -197,23 +205,37 @@ public final class CodexQuotaService: ObservableObject {
         do {
             var planHint: String?
             var accountType: String?
+            var accountData: Data?
 
             do {
-                let account = try await client.request(method: "account/read", params: [:], timeout: 20)
+                let account = try await client.request(method: "account/read", params: ["refreshToken": true], timeout: 20)
+                accountData = account
                 let decoded = CodexQuotaParser.decodeAccount(account)
                 planHint = decoded.planType
                 accountType = decoded.accountType
-                if decoded.loggedIn == false && decoded.requiresAuth {
-                    throw CodexClientError.rpc(code: 401, message: "not logged in")
-                }
-            } catch let error as CodexClientError where error.isUnauthorized {
-                applyNotLoggedIn()
-                return
+            } catch {
+                // Account metadata can be unavailable while the quota read is authenticated.
+                // Only a failure from the quota endpoint should block quota display.
+                guard !stopped, !Task.isCancelled else { return }
+                AppLog.quota.debug("Account metadata unavailable; continuing quota read")
             }
 
+            // Some Codex builds return account: null even while rate limits are readable.
+            // Read rate limits first; it carries the authoritative accountId.
             let result = try await client.request(method: "account/rateLimits/read", timeout: 30)
+            guard !stopped, !Task.isCancelled else { return }
+            if let newAccountId = CodexQuotaParser.preferredAccountId(accountData: accountData, rateLimitsData: result), newAccountId != accountId {
+                if accountId != nil || persist.lastSnapshot != nil || !persist.history.isEmpty {
+                    await handleAccountSwitch(to: newAccountId)
+                    return
+                }
+                accountId = newAccountId
+                persist.accountId = newAccountId
+                store.save(persist)
+            }
             try applyRateLimitResult(result, planHint: planHint, accountType: accountType)
             await readTokenUsage()
+            guard !stopped, !Task.isCancelled else { return }
             connectionState = .connected
             lastErrorMessage = nil
             planType = snapshot?.planType ?? planHint
@@ -228,6 +250,7 @@ public final class CodexQuotaService: ObservableObject {
     private func readTokenUsage() async {
         do {
             let result = try await client.request(method: "account/usage/read", timeout: 30)
+            guard !stopped, !Task.isCancelled else { return }
             let buckets = try CodexQuotaParser.parseTokenUsage(data: result)
             let total = try CodexQuotaParser.parseLifetimeTokens(data: result)
             dailyTokenUsage = buckets
@@ -245,6 +268,7 @@ public final class CodexQuotaService: ObservableObject {
             planTypeHint: planHint,
             accountType: accountType
         )
+        resetCredits = try CodexQuotaParser.parseResetCredits(data: result)
         applySnapshot(parsed)
     }
 
@@ -303,9 +327,10 @@ public final class CodexQuotaService: ObservableObject {
                 connectionState = .connected
                 return
             }
-            await readAccountAndLimits()
+            await refresh()
         case "account/updated":
-            await readAccountAndLimits()
+            resetCredits = nil
+            await refresh()
         case "internal/processExited":
             handleFailure(CodexClientError.processExited(-1))
             scheduleReconnect()
@@ -314,12 +339,40 @@ public final class CodexQuotaService: ObservableObject {
         }
     }
 
+    private func handleAccountSwitch(to newAccountId: String) async {
+        AppLog.quota.info("Codex account changed; clearing previous account state")
+        notificationListenTask?.cancel()
+        reconnectTask?.cancel()
+        persist = PersistedQuotaState(accountId: newAccountId)
+        accountId = newAccountId
+        snapshot = nil
+        history = []
+        dailyTokenUsage = []
+        localTodayUsage = nil
+        lifetimeTokens = nil
+        resetCredits = nil
+        planType = nil
+        lastSuccessfulRefresh = nil
+        cycleDetector = CycleDetector()
+        store.clear()
+        store.save(persist)
+        await client.stop()
+        await localUsageTracker.reset()
+        guard let executable = executableURL ?? CodexExecutableLocator().resolve() else {
+            connectionState = .missingCLI
+            return
+        }
+        await connectAndRead(executable: executable)
+    }
+
     private func applyNotLoggedIn() {
+        resetCredits = nil
         lastErrorMessage = "Codex 尚未登录"
         connectionState = snapshot == nil ? .notLoggedIn : .offlineCached
     }
 
     private func handleFailure(_ error: Error) {
+        resetCredits = nil
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         lastErrorMessage = message
         AppLog.quota.error("Quota update failed: \(message, privacy: .public)")
@@ -352,7 +405,7 @@ public final class CodexQuotaService: ObservableObject {
         AppLog.codex.info("Reconnecting in \(delay, format: .fixed(precision: 0))s")
         reconnectTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard let self, self.stopped == false else { return }
+            guard let self, self.stopped == false, !Task.isCancelled else { return }
             if let executable = self.executableURL {
                 await self.connectAndRead(executable: executable)
             } else {

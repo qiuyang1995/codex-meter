@@ -46,6 +46,10 @@ struct MenuBarContentView: View {
             Divider()
             UsageTrendView(viewModel: viewModel)
 
+            if let credits = viewModel.service.resetCredits, credits.availableCount(at: viewModel.tick) > 0 {
+                ResetCreditsView(summary: credits, now: viewModel.tick)
+            }
+
             if let alert = viewModel.alertText {
                 AlertBannerView(text: alert)
             }
@@ -78,7 +82,10 @@ struct MenuBarContentView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.title = "选择 Codex 可执行文件"
+        panel.treatsFilePackagesAsDirectories = false
+        panel.title = "选择 Codex App 或可执行文件"
+        panel.message = "可直接选择 Codex.app、ChatGPT.app，或 Codex CLI 可执行文件。"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
         panel.prompt = "选择"
         if panel.runModal() == .OK, let url = panel.url {
             viewModel.setExecutable(url)
@@ -111,5 +118,55 @@ enum CodexLauncher {
         if let fallback = URL(string: "https://chatgpt.com/codex") {
             workspace.open(fallback)
         }
+    }
+}
+
+
+private struct ResetCreditsView: View {
+    let summary: RateLimitResetCredits
+    let now: Date
+    @State private var expanded = true
+
+    var body: some View {
+        let credits = summary.availableCredits(at: now)
+        let count = summary.availableCount(at: now)
+        return DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(credits.enumerated()), id: \.element.id) { index, credit in
+                    if index > 0 { Divider() }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(credit.displayTitle)
+                            .font(.system(size: 11, weight: .medium))
+                        Text(expirationText(credit.expiresAt))
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if count > credits.count {
+                    Text(credits.isEmpty ? "暂未获取到重置卡明细" : "另有 \(count - credits.count) 张重置卡暂无明细")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }.padding(.top, 8)
+        } label: {
+            HStack {
+                Text("使用限额重置").font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("可用 \(count) 次")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(MeterTheme.green)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(MeterTheme.green.opacity(0.12), in: Capsule())
+            }
+        }
+        .tint(MeterTheme.accent)
+        .meterCard(padding: 10)
+    }
+
+    private func expirationText(_ date: Date?) -> String {
+        guard let date else { return "无到期限制" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M/d HH:mm zzz"
+        return "将于 \(formatter.string(from: date)) 到期"
     }
 }

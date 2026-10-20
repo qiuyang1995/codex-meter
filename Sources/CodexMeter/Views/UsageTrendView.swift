@@ -1,7 +1,7 @@
 import SwiftUI
 import CodexMeterCore
 
-/// 周/月日历热力图，每个日期格对应一天的 Token 用量。
+/// 周视图汇总历史每周用量，月视图展示每日用量。
 struct UsageTrendView: View {
     @ObservedObject var viewModel: QuotaViewModel
     @State private var period: TokenUsagePeriod = {
@@ -49,7 +49,7 @@ struct UsageTrendView: View {
             }
             Divider()
             HStack {
-                Text("每日用量").font(.system(size: 13.2, weight: .semibold))
+                Text(period == .week ? "每周用量" : "每日用量").font(.system(size: 13.2, weight: .semibold))
                 Spacer()
                 HStack(spacing: 2) {
                     ForEach(TokenUsagePeriod.allCases, id: \.self) { item in
@@ -76,6 +76,8 @@ struct UsageTrendView: View {
                 Text("暂无 Token 用量数据")
                     .font(.system(size: 11.0)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 65)
+            } else if period == .week {
+                WeeklyUsageChart(daily: indexedUsage, now: viewModel.tick)
             } else {
                 HStack {
                     navigationButton("chevron.left", enabled: canGoBack, offset: -1)
@@ -214,5 +216,114 @@ struct UsageTrendView: View {
 private struct CalendarDayButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.opacity(configuration.isPressed ? 0.75 : 1)
+    }
+}
+
+
+private struct WeeklyUsageChart: View {
+    let daily: [Date: Int64]
+    let now: Date
+    @State private var page = 0
+    @State private var hovered: Date?
+    @State private var selected: Date?
+    private let pageSize = 26
+    private let calendar = Calendar.current
+
+    var body: some View {
+        let all = TokenUsageStatistics.byWeek(daily, through: now)
+        let lastPage = max(0, (all.count - 1) / pageSize)
+        let end = max(0, all.count - min(page, lastPage) * pageSize)
+        let visible = Array(all[max(0, end - pageSize)..<end])
+        let maximum = max(visible.compactMap(\.tokens).max() ?? 0, 1)
+        let active = visible.first { $0.start == (hovered ?? selected) }
+        return VStack(spacing: 7) {
+            HStack {
+                Button { page = min(page, lastPage) + 1; selected = nil; hovered = nil } label: {
+                    Image(systemName: "chevron.left").frame(width: 22, height: 22).contentShape(Rectangle())
+                }.disabled(page >= lastPage).accessibilityLabel("更早的每周用量")
+                Spacer()
+                Text(visible.first.map { "\(label($0.start)) — \(label(min(visible.last!.end.addingTimeInterval(-1), now)))" } ?? "暂无数据")
+                    .font(.system(size: 10, weight: .medium))
+                Spacer()
+                Button { page = max(0, min(page, lastPage) - 1); selected = nil; hovered = nil } label: {
+                    Image(systemName: "chevron.right").frame(width: 22, height: 22).contentShape(Rectangle())
+                }.disabled(page == 0).accessibilityLabel("较近的每周用量")
+            }.buttonStyle(.plain)
+            GeometryReader { geometry in
+                let count = max(visible.count, 1)
+                let width = min(14, (geometry.size.width - CGFloat(count - 1) * 2) / CGFloat(count))
+                HStack(alignment: .bottom, spacing: 2) {
+                    ForEach(visible) { week in
+                        let filled = week.tokens.map { $0 > 0 ? max(1, Int(ceil(Double($0) / Double(maximum) * 7))) : 0 } ?? 0
+                        Button { selected = week.start } label: {
+                            VStack(spacing: 2) {
+                                ForEach(0..<7) { row in
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(row >= 7 - filled ? MeterTheme.blue : MeterTheme.track.opacity(0.45))
+                                        .frame(width: width, height: 10)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                            .contentShape(Rectangle())
+                            .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(
+                                active?.start == week.start ? MeterTheme.accent : .clear, lineWidth: 1.5))
+                        }
+                        .buttonStyle(CalendarDayButtonStyle())
+                        .onHover { inside in
+                            if inside { hovered = week.start }
+                            else if hovered == week.start { hovered = nil }
+                        }
+                        .accessibilityLabel("\(label(week.start))当周，\(tokenText(week))")
+                    }
+                    Spacer(minLength: 0)
+                }
+                .overlay(alignment: .top) {
+                    if let active, hovered != nil {
+                        Text("\(weekLabel(active))：\(tokenText(active))")
+                            .font(.system(size: 10, weight: .medium))
+                            .padding(7)
+                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                            .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(MeterTheme.cardBorder, lineWidth: 0.5))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .offset(y: -34)
+                            .allowsHitTesting(false)
+                    }
+                }
+            }.frame(height: 86)
+            GeometryReader { geometry in
+                let count = max(visible.count, 1)
+                let width = min(14, (geometry.size.width - CGFloat(count - 1) * 2) / CGFloat(count))
+                ForEach(Array(visible.enumerated()), id: \.element.id) { index, week in
+                    if index == 0 || calendar.component(.month, from: week.start) != calendar.component(.month, from: visible[index - 1].start) {
+                        Text("\(calendar.component(.month, from: week.start))月")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                            .position(x: min(max((CGFloat(index) + 0.5) * (width + 2), 12), geometry.size.width - 12), y: 6)
+                    }
+                }
+            }.frame(height: 12)
+            HStack {
+                Text(active.map(weekLabel) ?? "每列一周 · 周一至周日")
+                Spacer(minLength: 2)
+                Text(active.map(tokenText) ?? "悬停查看合计")
+            }
+            .font(.system(size: 9)).foregroundStyle(.secondary)
+            .lineLimit(1).minimumScaleFactor(0.8)
+            Text("蓝色方块数量表示周用量 · 本周累计至今日")
+                .font(.system(size: 8.8)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func label(_ date: Date) -> String {
+        "\(calendar.component(.year, from: date))/\(calendar.component(.month, from: date))/\(calendar.component(.day, from: date))"
+    }
+
+    private func weekLabel(_ week: WeeklyTokenUsage) -> String {
+        let end = calendar.date(byAdding: .day, value: -1, to: week.end)!
+        return "\(label(week.start))–\(calendar.component(.month, from: end))/\(calendar.component(.day, from: end))"
+    }
+
+    private func tokenText(_ week: WeeklyTokenUsage) -> String {
+        week.tokens.map { "\(TokenFormatting.display(Double($0))) Tokens" } ?? "无用量记录"
     }
 }

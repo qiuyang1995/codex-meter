@@ -46,3 +46,32 @@ public enum TokenUsageStatistics {
         }
     }
 }
+
+public struct WeeklyTokenUsage: Equatable, Sendable, Identifiable {
+    public let start: Date
+    public let end: Date
+    public let tokens: Int64?
+    public var id: Date { start }
+}
+
+extension TokenUsageStatistics {
+    /// Each bucket covers Monday through Sunday; missing weeks remain unknown.
+    public static func byWeek(_ daily: [Date: Int64], through now: Date, calendar: Calendar = .current) -> [WeeklyTokenUsage] {
+        let today = calendar.startOfDay(for: now)
+        let valid = daily.filter { $0.key <= today }
+        guard let earliest = valid.keys.min() else { return [] }
+        var totals: [Date: Int64] = [:]
+        for (day, tokens) in valid {
+            let start = TokenUsagePeriod.week.interval(containing: day, calendar: calendar).start
+            totals[start, default: 0] += tokens
+        }
+        var start = TokenUsagePeriod.week.interval(containing: earliest, calendar: calendar).start
+        var result: [WeeklyTokenUsage] = []
+        while start <= today {
+            let end = calendar.date(byAdding: .day, value: 7, to: start)!
+            result.append(WeeklyTokenUsage(start: start, end: end, tokens: totals[start]))
+            start = end
+        }
+        return result
+    }
+}

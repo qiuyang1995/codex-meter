@@ -68,17 +68,54 @@ public enum CodexQuotaParser {
         )
     }
 
-    public static func decodeAccount(_ data: Data) -> (accountType: String?, planType: String?, requiresAuth: Bool, loggedIn: Bool) {
+    public static func decodeAccount(_ data: Data) -> (accountId: String?, accountType: String?, planType: String?, requiresAuth: Bool, loggedIn: Bool) {
         guard let object = (try? jsonObject(from: data)) as? [String: Any] else {
-            return (nil, nil, true, false)
+            return (nil, nil, nil, true, false)
         }
         let requiresAuth = JSONValue.bool(object, keys: ["requiresOpenaiAuth", "requires_openai_auth"]) ?? true
         guard let account = JSONValue.object(JSONValue.value(object, keys: ["account"])) else {
-            return (nil, nil, requiresAuth, false)
+            let topLevelId = JSONValue.string(object, keys: ["accountId", "account_id", "userId", "user_id", "email", "subject", "sub"])
+            return (topLevelId, nil, nil, requiresAuth, topLevelId != nil)
         }
+        let accountId = JSONValue.string(account, keys: ["id", "accountId", "account_id", "userId", "user_id", "email", "subject", "sub"])
+            ?? JSONValue.string(object, keys: ["accountId", "account_id", "userId", "user_id", "email", "subject", "sub"])
         let type = JSONValue.string(account, keys: ["type"])
         let plan = JSONValue.string(account, keys: ["planType", "plan_type"])
-        return (type, plan, requiresAuth, type != nil)
+        return (accountId, type, plan, requiresAuth, type != nil)
+    }
+
+    public static func parseAccountId(data: Data) -> String? {
+        guard let object = try? jsonObject(from: data) as? [String: Any] else { return nil }
+        return JSONValue.string(object, keys: ["accountId", "account_id", "userId", "user_id", "email", "subject", "sub"])
+            ?? JSONValue.object(JSONValue.value(object, keys: ["account"]))
+                .flatMap { JSONValue.string($0, keys: ["id", "accountId", "account_id", "userId", "user_id", "email", "subject", "sub"]) }
+    }
+
+    public static func preferredAccountId(accountData: Data?, rateLimitsData: Data) -> String? {
+        // account/read can identify a user by email, while rate limits uses a UUID.
+        // Compare one identifier after both reads, with the quota owner taking priority.
+        let identity = parseAccountId(data: rateLimitsData)
+            ?? accountData.flatMap { decodeAccount($0).accountId }
+        guard let identity, !identity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return identity
+    }
+
+    public static func parseResetCredits(data: Data) throws -> RateLimitResetCredits? {
+        guard let object = try jsonObject(from: data) as? [String: Any],
+              let summary = JSONValue.object(JSONValue.value(object, keys: ["rateLimitResetCredits"])),
+              let count = JSONValue.int(summary, keys: ["availableCount"]) else { return nil }
+        let credits = JSONValue.array(JSONValue.value(summary, keys: ["credits"]))?.compactMap { value -> RateLimitResetCredit? in
+            guard let credit = JSONValue.object(value),
+                  let id = JSONValue.string(credit, keys: ["id"]), !id.isEmpty else { return nil }
+            return RateLimitResetCredit(
+                id: id,
+                resetType: JSONValue.string(credit, keys: ["resetType"]) ?? "unknown",
+                status: JSONValue.string(credit, keys: ["status"]) ?? "unknown",
+                expiresAt: JSONValue.date(fromUnix: JSONValue.value(credit, keys: ["expiresAt"])),
+                title: JSONValue.string(credit, keys: ["title"])
+            )
+        }
+        return RateLimitResetCredits(availableCount: count, credits: credits)
     }
 
     public static func parseTokenUsage(data: Data) throws -> [AccountTokenUsageDailyBucket] {

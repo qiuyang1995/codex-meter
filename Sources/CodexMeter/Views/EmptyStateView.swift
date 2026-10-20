@@ -27,7 +27,7 @@ struct EmptyStateView: View {
                 Button("重新检测", action: onRetry)
                     .keyboardShortcut("r", modifiers: .command)
                 if kind == .missingCLI {
-                    Button("选择 Codex 路径", action: onChoosePath)
+                    Button("选择 Codex App", action: onChoosePath)
                 }
             }
             .controlSize(.regular)
@@ -60,7 +60,7 @@ struct EmptyStateView: View {
         case .loading:
             return "正在连接本机 Codex，并读取当前账户额度。"
         case .missingCLI:
-            return "安装 Codex CLI 并登录后，\n即可自动读取当前账户额度。"
+            return "请安装并登录官方 Codex／ChatGPT App，\n或选择已安装的 App。也支持 Codex CLI。"
         case .notLoggedIn:
             return "请先在 Codex 中完成 ChatGPT 登录。"
         case .unavailable:

@@ -32,7 +32,7 @@ public actor CodexAppServerClient {
 
     private let clientName = "codex_meter"
     private let clientTitle = "Codex Meter"
-    private let clientVersion = "1.1.0"
+    private let clientVersion = "1.2.0"
 
     private var process: Process?
     private var stdinHandle: FileHandle?
@@ -44,6 +44,7 @@ public actor CodexAppServerClient {
     private var notificationContinuations: [UUID: AsyncStream<JSONRPCNotification>.Continuation] = [:]
     private var isInitialized = false
     private var currentExecutable: URL?
+    private var processGeneration: UUID?
 
     public init() {}
 
@@ -61,8 +62,8 @@ public actor CodexAppServerClient {
         }
     }
 
-    public func start(executable: URL) async throws -> InitializeResult {
-        if process?.isRunning == true, currentExecutable == executable, isInitialized {
+    public func start(executable: URL, forceRestart: Bool = false) async throws -> InitializeResult {
+        if !forceRestart, process?.isRunning == true, currentExecutable == executable, isInitialized {
             return InitializeResult(userAgent: nil, codexHome: nil, platformOs: nil)
         }
         await stop(sendTerminate: true)
@@ -75,6 +76,8 @@ public actor CodexAppServerClient {
     }
 
     public func stop(sendTerminate: Bool = true) async {
+        // Ignore delayed stdout and exit callbacks from this process after a restart.
+        processGeneration = nil
         failAllPending(CodexClientError.cancelled)
         isInitialized = false
         stdinHandle?.readabilityHandler = nil
@@ -142,6 +145,7 @@ public actor CodexAppServerClient {
 
     private func launch(executable: URL) throws {
         let process = Process()
+        let generation = UUID()
         process.executableURL = executable
         process.arguments = ["app-server", "--stdio"]
         process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
@@ -161,10 +165,11 @@ public actor CodexAppServerClient {
 
         process.terminationHandler = { [weak self] finished in
             let status = finished.terminationStatus
-            Task { await self?.handleTermination(status: status) }
+            Task { await self?.handleTermination(status: status, generation: generation) }
         }
 
         try process.run()
+        self.processGeneration = generation
         self.process = process
         self.stdinHandle = stdin.fileHandleForWriting
         self.stdoutHandle = stdout.fileHandleForReading
@@ -172,11 +177,11 @@ public actor CodexAppServerClient {
 
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            Task { await self?.ingest(data) }
+            Task { await self?.ingest(data, generation: generation) }
         }
         stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            Task { await self?.ingestStderr(data) }
+            Task { await self?.ingestStderr(data, generation: generation) }
         }
 
         AppLog.codex.info("Started Codex App Server pid=\(process.processIdentifier)")
@@ -220,7 +225,8 @@ public actor CodexAppServerClient {
         try stdinHandle.write(contentsOf: line)
     }
 
-    private func ingest(_ data: Data) {
+    private func ingest(_ data: Data, generation: UUID) {
+        guard processGeneration == generation else { return }
         if data.isEmpty {
             return
         }
@@ -233,7 +239,8 @@ public actor CodexAppServerClient {
         }
     }
 
-    private func ingestStderr(_ data: Data) {
+    private func ingestStderr(_ data: Data, generation: UUID) {
+        guard processGeneration == generation else { return }
         guard data.isEmpty == false,
               let text = String(data: data, encoding: .utf8),
               text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
@@ -320,7 +327,9 @@ public actor CodexAppServerClient {
         }
     }
 
-    private func handleTermination(status: Int32) {
+    private func handleTermination(status: Int32, generation: UUID) {
+        guard processGeneration == generation else { return }
+        processGeneration = nil
         AppLog.codex.error("Codex App Server exited with status \(status)")
         isInitialized = false
         failAllPending(CodexClientError.processExited(status))

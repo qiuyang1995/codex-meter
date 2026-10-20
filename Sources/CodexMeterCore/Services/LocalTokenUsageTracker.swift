@@ -37,6 +37,11 @@ public actor LocalTokenUsageTracker {
         self.root = root
     }
 
+    public func reset() {
+        day = nil
+        files.removeAll()
+    }
+
     public func sample(now: Date = Date(), calendar: Calendar = .current) -> LocalTodayTokenUsage? {
         let start = calendar.startOfDay(for: now)
         let end = calendar.date(byAdding: .day, value: 1, to: start)!

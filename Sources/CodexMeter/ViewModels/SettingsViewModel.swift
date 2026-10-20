@@ -55,8 +55,8 @@ final class SettingsViewModel: ObservableObject {
     }
 
     var versionText: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "3"
         return "Version \(short) (\(build))"
     }
 
@@ -78,9 +78,11 @@ final class SettingsViewModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = false
-        panel.title = "选择 Codex 可执行文件"
+        panel.treatsFilePackagesAsDirectories = false
+        panel.title = "选择 Codex App 或可执行文件"
+        panel.message = "可直接选择 Codex.app、ChatGPT.app，或 Codex CLI 可执行文件。"
         panel.prompt = "选择"
-        panel.directoryURL = URL(fileURLWithPath: "/opt/homebrew/bin")
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
         if panel.runModal() == .OK, let url = panel.url {
             Task { await service.setExecutableOverride(url.path) }
         }

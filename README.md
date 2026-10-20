@@ -12,12 +12,12 @@
 
 ## 截图位置说明
 
-仓库根目录的 `原型图.png` 是早期金额式 Dashboard 草稿，**不是**当前界面。当前产品只展示周额度百分比，不会显示美元金额。
+仓库根目录的 `原型图.png` 是早期金额式 Dashboard 草稿，**不是**当前界面。当前界面展示剩余额度百分比与 Token 用量统计，不显示美元金额。
 
 应用运行后：
 
 1. 顶部菜单栏右侧出现带字母 `C` 的图标
-2. 点击图标弹出约 380pt 宽的浮层
+2. 点击图标弹出约 340pt 宽的浮层
 3. 浮层直接显示本周剩余百分比、刷新时间和最近趋势
 
 ## 功能
@@ -40,7 +40,7 @@
 ## 系统要求
 
 - macOS 13.0 或更高
-- 已安装并完成 ChatGPT 登录的 [Codex CLI](https://github.com/openai/codex)
+- 已安装并登录官方 Codex／ChatGPT macOS App；也支持单独安装的 [Codex CLI](https://github.com/openai/codex)
 - Xcode 15+（用 Xcode 打开工程时）或 Swift 5.9+ 命令行工具
 
 ## 运行方式
@@ -87,12 +87,10 @@ xcodebuild -project CodexMeter.xcodeproj -scheme CodexMeter -configuration Relea
 
 1. 设置里手动指定的路径
 2. 上次成功缓存的路径
-3. `/opt/homebrew/bin/codex`
-4. `/usr/local/bin/codex`
-5. `~/.local/bin/codex`
-6. `~/.npm-global/bin/codex`
-7. `~/.codex/plugins/.plugin-appserver/codex`
-8. 登录 shell：`/bin/zsh -l -c "command -v codex"`
+3. 通过 Bundle ID `com.openai.codex` 及正在运行的应用定位官方 App，再检查内置 CLI；兼容系统／用户应用目录的 `Codex.app` 和 `ChatGPT.app`
+4. Homebrew、用户 CLI、旧版插件和旧版 ChatGPT 内置路径
+5. nvm、Volta、Cargo 等 CLI 安装目录
+6. 登录 shell：`/bin/zsh -l -c "command -v codex"`
 
 找到后会启动：
 
@@ -196,8 +194,8 @@ View 不直接启动 Process。额度 JSON 先进入 DTO / Parser，再变成 `C
 
 ## 版本
 
-- Version `1.1.0`
-- Build `1`
+- Version `1.2.0`
+- Build `3`
 - Bundle Identifier `com.local.CodexMeter`
 - Deployment Target macOS 13.0
 
@@ -208,3 +206,28 @@ View 不直接启动 Process。额度 JSON 先进入 DTO / Parser，再变成 `C
 本机日志不包含其他设备、远程主机或云端任务，也不能完整按登录账号隔离。切换账号不会把本机日志自动拆成不同账户的今日用量。界面明确标注本机口径；日志不可读时不伪造实时数值。程序不修改会话日志、不上传其内容。
 
 日历悬浮提示使用原生 SwiftUI 悬浮层，和顶部统计卡统一采用万／亿 Tokens 格式；点击可固定详情。
+
+周视图按周一至周日汇总历史 Token，用一列方块表示一周，蓝色方块数量对应周用量；一屏最多 26 周，可以翻页查看更早记录。悬停显示日期范围及该周合计，点击可固定详情。本周累计至今日，包含本机实时用量；月视图继续按天展示。
+
+### 重置卡信息
+
+用量图下方在有可用重置卡时显示“使用限额重置”板块，包含可用次数、每张卡的重置类型及本地时区到期时间，支持展开／收起。信息随额度刷新读取；零张、接口不支持或全部到期时隐藏。后端仅返回数量时保留数量并提示暂无明细。本板块只读，不提供兑换或消耗重置卡的操作。
+
+### 账号切换检测
+
+每次额度刷新会先读取用户信息及额度，再统一选择账号标识：优先使用 `account/rateLimits/read` 的 `accountId`，缺失时才回退到 `account/read` 的标识。这样不会把同一账号的邮箱和 UUID 误判成两个账号。检测到账号变化时，Codex Meter 会停止旧 `codex app-server`，清理旧账号的额度快照、Token 日用量、重置卡、历史采样和本机实时统计索引，再启动新的 app-server 读取新账号。账号标识缺失时不会猜测切换，避免误清理数据。
+
+账号刷新时会向 `account/read` 传递 `refreshToken: true`。用户信息为空或读取失败时，仍会尝试读取额度；有效额度响应不会被可选用户信息阻断。点击“刷新数据”会真正停止旧 app-server 并启动新进程；定时刷新继续复用连接。
+
+### 官方 App 已安装，但提示未检测到 Codex
+
+请先确认 Codex Meter 为 v1.2.0 或更新版本。v1.1.0 的下载包尚未支持新版官方 App 的内置 CLI 路径，仅点击“重新检测”不会升级程序。
+
+新版先通过 macOS 注册的 Bundle ID `com.openai.codex` 和运行中的应用定位安装目录，并兼容以下内置布局：
+
+- `Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`
+- `Contents/Resources/codex-cli/bin/codex`
+- `Contents/Resources/codex`
+- `Contents/MacOS/codex`
+
+不要求用户在 shell 中配置 PATH。自动检测仍未找到时，点击“选择 Codex App”，直接选择已安装的 `.app` 即可；设置页同样支持选择 App 或独立 CLI。旧路径缓存不存在时会继续检测其他路径。
