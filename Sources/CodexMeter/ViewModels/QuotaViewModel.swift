@@ -12,6 +12,7 @@ final class QuotaViewModel: ObservableObject {
     @Published private(set) var tokenUsageByDay: [Date: Int64] = [:]
 
     private var historicalTokenUsageByDay: [Date: Int64] = [:]
+    private var recentLocalUsageByDay: [Date: Int64] = [:]
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
 
@@ -23,12 +24,13 @@ final class QuotaViewModel: ObservableObject {
         service.$dailyTokenUsage
             .removeDuplicates()
             .map { TokenUsageStatistics.byDay($0) }
-            .combineLatest(service.$localTodayUsage.removeDuplicates())
-            .sink { [weak self] historical, local in
+            .combineLatest(service.$localTodayUsage.removeDuplicates(),
+                           $tick.map { Calendar.current.startOfDay(for: $0) }.removeDuplicates())
+            .sink { [weak self] historical, local, today in
                 self?.historicalTokenUsageByDay = historical
-                var usage = historical
-                if let local, Calendar.current.isDateInToday(local.day) { usage[local.day] = local.tokens }
-                self?.tokenUsageByDay = usage
+                let recent = local?.recentUsageByDay(now: today) ?? [:]
+                self?.recentLocalUsageByDay = recent
+                self?.tokenUsageByDay = historical.merging(recent) { _, local in local }
             }
             .store(in: &cancellables)
 
@@ -178,7 +180,7 @@ final class QuotaViewModel: ObservableObject {
     }
 
     var todayTokenTitle: String {
-        guard let local = service.localTodayUsage, Calendar.current.isDateInToday(local.day) else { return "今日消耗" }
+        guard recentLocalUsageByDay[Calendar.current.startOfDay(for: tick)] != nil else { return "今日消耗" }
         return "今日 · 本机实时"
     }
 
@@ -219,15 +221,16 @@ final class QuotaViewModel: ObservableObject {
     var lifetimeTokenText: String {
         let historicalTotal = service.lifetimeTokens ?? (historicalTokenUsageByDay.isEmpty ? nil : historicalTokenUsageByDay.values.reduce(0, +))
         var total = historicalTotal
-        if let local = service.localTodayUsage, Calendar.current.isDateInToday(local.day) {
-            // Replace the server's delayed today bucket instead of adding it twice.
-            total = max((historicalTotal ?? 0) - (historicalTokenUsageByDay[local.day] ?? 0), 0) + local.tokens
+        if !recentLocalUsageByDay.isEmpty {
+            // Replace both delayed daily buckets; do not add them to official totals twice.
+            let replaced = recentLocalUsageByDay.keys.reduce(Int64(0)) { $0 + (historicalTokenUsageByDay[$1] ?? 0) }
+            total = max((historicalTotal ?? 0) - replaced, 0) + recentLocalUsageByDay.values.reduce(0, +)
         }
         return total.map { TokenFormatting.display(Double($0)) } ?? "—"
     }
 
     var lifetimeTokenCaption: String {
-        if let local = service.localTodayUsage, Calendar.current.isDateInToday(local.day) { return "含本机今日用量" }
+        if !recentLocalUsageByDay.isEmpty { return "含本机近两日用量" }
         return service.lifetimeTokens == nil ? "已获取的历史" : "全部历史"
     }
 

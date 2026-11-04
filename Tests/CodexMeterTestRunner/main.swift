@@ -18,6 +18,7 @@ enum TestRunner {
             ("quota.accountIdentity", testAccountIdentity),
             ("quota.resetCredits", testResetCredits),
             ("usage.weeklyTotals", testWeeklyTokenTotals),
+            ("usage.localWindow", testLocalUsageWindow),
             ("usage.calendar", testTokenCalendar),
             ("usage.lifetime", testLifetimeTokens),
             ("parser.weeklyOnly", testWeeklyOnlyWindow),
@@ -62,6 +63,7 @@ enum TestRunner {
 
         let asyncCases: [(String, () async throws -> Void)] = [
             ("usage.localIncremental", testLocalTokenUsage),
+            ("usage.localTwoDays", testLocalTwoDayUsage),
             ("quota.refreshFlow", testAccountRefreshFlow)
         ]
         for (name, body) in asyncCases {
@@ -464,7 +466,7 @@ func testLocalTokenUsage() async throws {
 
     let tomorrow = calendar.date(byAdding: .day, value: 1, to: now)!
     sample = await tracker.sample(now: tomorrow, calendar: calendar)
-    try expect(sample?.tokens == 0 && sample?.day == calendar.startOfDay(for: tomorrow), "daily rollover")
+    try expect(sample?.tokens == 0 && sample?.yesterdayTokens == 110 && sample?.day == calendar.startOfDay(for: tomorrow), "daily rollover retains yesterday")
     let missing = LocalTokenUsageTracker(root: root.appendingPathComponent("missing"))
     sample = await missing.sample(now: now, calendar: calendar)
     try expect(sample == nil, "unavailable directory does not fabricate zero")
@@ -727,4 +729,71 @@ func testFreshInstallAndAppSelection() throws {
     let notAnApp = root.appendingPathComponent("Ordinary Folder")
     try manager.createDirectory(at: notAnApp, withIntermediateDirectories: true)
     try expect(CodexExecutableLocator(applicationURLs: []).validatedExecutable(at: notAnApp.path) == nil, "ordinary directories are not executable")
+}
+
+func testLocalUsageWindow() throws {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+    func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        calendar.date(from: DateComponents(year: year, month: month, day: day))!
+    }
+    let today = date(2026, 3, 9)
+    let yesterday = date(2026, 3, 8)
+    let snapshot = LocalTodayTokenUsage(day: today, tokens: 20, yesterdayTokens: 10)
+    try expect(snapshot.recentUsageByDay(now: today, calendar: calendar) == [today: 20, yesterday: 10], "DST uses calendar days rather than 24-hour subtraction")
+    try expect(snapshot.recentUsageByDay(now: date(2026, 3, 10), calendar: calendar) == [today: 20], "midnight discards day before yesterday even before next local sample")
+    try expect(snapshot.recentUsageByDay(now: date(2026, 3, 11), calendar: calendar).isEmpty, "stale samples cannot overwrite older official history")
+    let newYear = date(2027, 1, 1)
+    let yearSnapshot = LocalTodayTokenUsage(day: newYear, tokens: 0, yesterdayTokens: 40)
+    try expect(yearSnapshot.recentUsageByDay(now: newYear, calendar: calendar) == [newYear: 0, date(2026, 12, 31): 40], "year boundary and explicit zero usage")
+}
+
+func testLocalTwoDayUsage() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let manager = FileManager.default
+    let sessions = root.appendingPathComponent("sessions")
+    let archive = root.appendingPathComponent("archived_sessions")
+    try manager.createDirectory(at: sessions, withIntermediateDirectories: true)
+    try manager.createDirectory(at: archive, withIntermediateDirectories: true)
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
+    let now = calendar.date(from: DateComponents(year: 2026, month: 11, day: 4, hour: 12))!
+    let today = calendar.startOfDay(for: now)
+    let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+    func event(_ timestamp: String, _ total: Int, _ last: Int) -> String {
+        "{\"timestamp\":\"\(timestamp)\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"total_tokens\":\(total)},\"last_token_usage\":{\"total_tokens\":\(last)}}}}\n"
+    }
+    let main = event("2026-11-02T15:59:00.000Z", 100, 100)
+        + event("2026-11-02T16:00:00.000Z", 140, 40)
+        + event("2026-11-03T15:59:00.000Z", 200, 60)
+        + event("2026-11-03T16:00:00.000Z", 230, 30)
+    try Data(main.utf8).write(to: sessions.appendingPathComponent("cross-midnight.jsonl"))
+    try manager.setAttributes([.modificationDate: now], ofItemAtPath: sessions.appendingPathComponent("cross-midnight.jsonl").path)
+    let finishedYesterday = sessions.appendingPathComponent("finished-yesterday.jsonl")
+    try Data(event("2026-11-03T04:00:00.000Z", 70, 70).utf8).write(to: finishedYesterday)
+    try manager.setAttributes([.modificationDate: yesterday.addingTimeInterval(18 * 3600)], ofItemAtPath: finishedYesterday.path)
+    try Data(main.utf8).write(to: archive.appendingPathComponent("copy.jsonl"))
+    try manager.setAttributes([.modificationDate: now], ofItemAtPath: archive.appendingPathComponent("copy.jsonl").path)
+    let tracker = LocalTokenUsageTracker(root: root)
+    var sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 30 && sample?.yesterdayTokens == 170, "include sessions modified only yesterday, split at local midnight, deduplicate archive")
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.yesterdayTokens == 170, "unchanged files do not count twice")
+    let handle = try FileHandle(forWritingTo: finishedYesterday)
+    _ = try handle.seekToEnd()
+    try handle.write(contentsOf: Data(event("2026-11-03T05:00:00.000Z", 120, 50).utf8))
+    try handle.close()
+    try manager.setAttributes([.modificationDate: now], ofItemAtPath: finishedYesterday.path)
+    sample = await tracker.sample(now: now, calendar: calendar)
+    try expect(sample?.tokens == 30 && sample?.yesterdayTokens == 220, "late appended yesterday usage updates incrementally")
+    let restarted = LocalTokenUsageTracker(root: root)
+    let recovered = await restarted.sample(now: now, calendar: calendar)
+    try expect(recovered == sample, "both days recover after restarting monitor")
+    let tomorrow = calendar.date(byAdding: .day, value: 1, to: now)!
+    sample = await tracker.sample(now: tomorrow, calendar: calendar)
+    try expect(sample?.tokens == 0 && sample?.yesterdayTokens == 30, "previous today becomes local yesterday")
+    let dayAfter = calendar.date(byAdding: .day, value: 2, to: now)!
+    sample = await tracker.sample(now: dayAfter, calendar: calendar)
+    try expect(sample?.tokens == 0 && sample?.yesterdayTokens == 0, "day before yesterday falls out of local window")
 }

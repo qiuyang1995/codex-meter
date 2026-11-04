@@ -39,9 +39,9 @@
 
 ## 系统要求
 
-- macOS 13.0 或更高
+- macOS 13.0 或更高，支持 Intel（x86_64）和 Apple Silicon（arm64），请下载对应架构的安装包
 - 已安装并登录官方 Codex／ChatGPT macOS App；也支持单独安装的 [Codex CLI](https://github.com/openai/codex)
-- Xcode 15+（用 Xcode 打开工程时）或 Swift 5.9+ 命令行工具
+- Xcode 16+（用 Xcode 打开工程时）或 Swift 6.0+ 命令行工具（仅源码构建需要）
 
 ## 运行方式
 
@@ -58,8 +58,12 @@
 ```bash
 chmod +x Scripts/package-app.sh
 ./Scripts/package-app.sh
+# 在 Apple Silicon 上交叉构建 Intel 版本
+./Scripts/package-app.sh release x86_64
 open CodexMeter.app
 ```
+
+打包脚本默认构建当前机器架构，可通过第二个参数指定 `arm64` 或 `x86_64`。如需选择 SDK，可设置 `SDKROOT`。两个架构都输出到根目录 `CodexMeter.app`，分别构建时请及时保存产物。
 
 首次从 Finder 启动时，macOS 可能会提示未签名应用。这是本地开发版，使用 ad-hoc 签名。
 
@@ -194,14 +198,14 @@ View 不直接启动 Process。额度 JSON 先进入 DTO / Parser，再变成 `C
 
 ## 版本
 
-- Version `1.2.0`
-- Build `3`
+- Version `1.3.0`
+- Build `4`
 - Bundle Identifier `com.local.CodexMeter`
 - Deployment Target macOS 13.0
 
-### 今日实时用量
+### 近两日实时用量
 
-“今日 · 本机实时”每 5 秒增量读取 `$CODEX_HOME/sessions` 和 `archived_sessions`（默认 `~/.codex`）中的 OpenAI Codex `token_count` 记录。应用启动时补算当天，模型响应写入日志后更新，不是流式逐 Token 计数。今日及相关周合计／峰值使用该值；昨日及更早日期继续使用 Codex 官方统计，累计值避免重复加入官方当天桶。
+“今日 · 本机实时”每 5 秒增量读取 `$CODEX_HOME/sessions` 和 `archived_sessions`（默认 `~/.codex`）中的 OpenAI Codex `token_count` 记录。应用启动时补算今天和昨天两个本地自然日，模型响应写入日志后更新，不是流式逐 Token 计数。日历、周合计及峰值中的今天、昨天使用本机数据，前天及更早日期使用 Codex 官方统计；累计值先扣除官方对应的两天用量再加入本机值，避免重复。跨午夜后，退出近两日范围的日期自动恢复使用官方数据。
 
 本机日志不包含其他设备、远程主机或云端任务，也不能完整按登录账号隔离。切换账号不会把本机日志自动拆成不同账户的今日用量。界面明确标注本机口径；日志不可读时不伪造实时数值。程序不修改会话日志、不上传其内容。
 

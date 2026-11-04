@@ -32,7 +32,7 @@ public actor CodexAppServerClient {
 
     private let clientName = "codex_meter"
     private let clientTitle = "Codex Meter"
-    private let clientVersion = "1.2.0"
+    private let clientVersion = "1.3.0"
 
     private var process: Process?
     private var stdinHandle: FileHandle?

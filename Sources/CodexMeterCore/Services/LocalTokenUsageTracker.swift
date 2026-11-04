@@ -3,21 +3,37 @@ import Foundation
 public struct LocalTodayTokenUsage: Equatable, Sendable {
     public let day: Date
     public let tokens: Int64
+    public let yesterdayTokens: Int64
 
-    public init(day: Date, tokens: Int64) {
+    public init(day: Date, tokens: Int64, yesterdayTokens: Int64 = 0) {
         self.day = day
         self.tokens = tokens
+        self.yesterdayTokens = yesterdayTokens
+    }
+
+    public func recentUsageByDay(now: Date, calendar: Calendar = .current) -> [Date: Int64] {
+        let today = calendar.startOfDay(for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+        let sampledDay = calendar.startOfDay(for: day)
+        let sampledYesterday = calendar.date(byAdding: .day, value: -1, to: sampledDay)!
+        return [sampledDay: tokens, sampledYesterday: yesterdayTokens]
+            .filter { $0.key >= yesterday && $0.key <= today }
     }
 }
 
 /// Reads only metadata / token-count records. File offsets keep the five-second
 /// refresh incremental; the actor keeps disk I/O and parsing off the UI actor.
 public actor LocalTokenUsageTracker {
+    private struct TokenEvent {
+        let day: Date
+        let tokens: Int64
+    }
+
     private struct FileState {
         var offset: UInt64 = 0
         var pending = Data()
         var previousTotal: Int64?
-        var events: [String: Int64] = [:]
+        var events: [String: TokenEvent] = [:]
         var modified: Date?
         var isOpenAI = true
     }
@@ -43,10 +59,11 @@ public actor LocalTokenUsageTracker {
     }
 
     public func sample(now: Date = Date(), calendar: Calendar = .current) -> LocalTodayTokenUsage? {
-        let start = calendar.startOfDay(for: now)
-        let end = calendar.date(byAdding: .day, value: 1, to: start)!
-        if day != start {
-            day = start
+        let today = calendar.startOfDay(for: now)
+        let start = calendar.date(byAdding: .day, value: -1, to: today)!
+        let end = calendar.date(byAdding: .day, value: 1, to: today)!
+        if day != today {
+            day = today
             files.removeAll()
         }
         let manager = FileManager.default
@@ -78,7 +95,7 @@ public actor LocalTokenUsageTracker {
                         state.pending.append(chunk)
                         while let newline = state.pending.firstIndex(of: 10) {
                             let line = state.pending[..<newline]
-                            consume(Data(line), state: &state, start: start, end: end)
+                            consume(Data(line), state: &state, start: start, end: end, calendar: calendar)
                             state.pending.removeSubrange(...newline)
                         }
                     }
@@ -92,14 +109,17 @@ public actor LocalTokenUsageTracker {
         guard !failed else { return nil }
         // Forks / archived copies may repeat the same timestamped usage event.
         // Count such copied records once across files, as well as within a file.
-        var events: [String: Int64] = [:]
+        var events: [String: TokenEvent] = [:]
         for state in files.values where state.isOpenAI {
-            events.merge(state.events) { max($0, $1) }
+            events.merge(state.events) { $0.tokens >= $1.tokens ? $0 : $1 }
         }
-        return LocalTodayTokenUsage(day: start, tokens: events.values.reduce(0, +))
+        let totals = events.values.reduce(into: [Date: Int64]()) { totals, event in
+            totals[event.day, default: 0] += event.tokens
+        }
+        return LocalTodayTokenUsage(day: today, tokens: totals[today] ?? 0, yesterdayTokens: totals[start] ?? 0)
     }
 
-    private func consume(_ line: Data, state: inout FileState, start: Date, end: Date) {
+    private func consume(_ line: Data, state: inout FileState, start: Date, end: Date, calendar: Calendar) {
         guard line.range(of: Data("\"token_count\"".utf8)) != nil
                 || line.range(of: Data("\"session_meta\"".utf8)) != nil,
               let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
@@ -123,6 +143,6 @@ public actor LocalTokenUsageTracker {
         if let previous, total >= previous { increment = total - previous }
         else { increment = max(last ?? total, 0) }
         guard increment > 0 else { return }
-        state.events["\(stamp)|\(total)|\(last ?? 0)"] = increment
+        state.events["\(stamp)|\(total)|\(last ?? 0)"] = TokenEvent(day: calendar.startOfDay(for: timestamp), tokens: increment)
     }
 }

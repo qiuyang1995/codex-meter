@@ -5,27 +5,33 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 CONFIGURATION="${1:-release}"
+ARCH="${2:-$(uname -m)}"
+case "$ARCH" in
+  arm64|x86_64) ;;
+  *) echo "error: unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
+BUILD_ARGS=(--build-system native --arch "$ARCH")
+if [[ -n "${SDKROOT:-}" ]]; then
+  BUILD_ARGS+=(--sdk "$SDKROOT")
+fi
 if [[ "$CONFIGURATION" == "debug" ]]; then
   SWIFT_CONFIG="debug"
 else
   SWIFT_CONFIG="release"
 fi
 
-echo "==> Building CodexMeter ($SWIFT_CONFIG)"
+echo "==> Building CodexMeter ($SWIFT_CONFIG, $ARCH)"
 if [[ "$SWIFT_CONFIG" == "release" ]]; then
   # 体积优先：-Osize + 链接期裁剪未用代码
-  swift build -c release --product CodexMeter \
+  swift build "${BUILD_ARGS[@]}" -c release --product CodexMeter \
     -Xswiftc -Osize \
     -Xlinker -dead_strip
 else
-  swift build -c "$SWIFT_CONFIG" --product CodexMeter
+  swift build "${BUILD_ARGS[@]}" -c "$SWIFT_CONFIG" --product CodexMeter
 fi
 
-BIN="$ROOT/.build/$SWIFT_CONFIG/CodexMeter"
-if [[ ! -x "$BIN" ]]; then
-  # Apple Silicon vs Intel triple folder
-  BIN="$(find "$ROOT/.build" -type f -name CodexMeter -path "*/$SWIFT_CONFIG/*" | head -n 1)"
-fi
+BIN_DIR="$(swift build "${BUILD_ARGS[@]}" -c "$SWIFT_CONFIG" --show-bin-path)"
+BIN="$BIN_DIR/CodexMeter"
 if [[ -z "${BIN}" || ! -x "$BIN" ]]; then
   echo "error: built executable not found" >&2
   exit 1

@@ -62,7 +62,7 @@ enum SnapshotRenderer {
                     tokens: Int64(tokens)
                 )
             },
-            localTodayUsage: CommandLine.arguments.contains("--snapshot-live") ? LocalTodayTokenUsage(day: calendar.startOfDay(for: now), tokens: 9_876_543) : nil,
+            localTodayUsage: CommandLine.arguments.contains("--snapshot-live") ? LocalTodayTokenUsage(day: calendar.startOfDay(for: now), tokens: 9_876_543, yesterdayTokens: 1_234_567) : nil,
             resetCredits: CommandLine.arguments.contains("--snapshot-resets") ? RateLimitResetCredits(availableCount: 2, credits: [
                 RateLimitResetCredit(id: "preview-1", resetType: "codexRateLimits", status: "available", expiresAt: now.addingTimeInterval(18 * 86400)),
                 RateLimitResetCredit(id: "preview-2", resetType: "codexRateLimits", status: "available", expiresAt: now.addingTimeInterval(19 * 86400))
