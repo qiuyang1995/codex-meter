@@ -64,6 +64,8 @@ enum TestRunner {
         let asyncCases: [(String, () async throws -> Void)] = [
             ("usage.localIncremental", testLocalTokenUsage),
             ("usage.localTwoDays", testLocalTwoDayUsage),
+            ("usage.localOutputSpeed", testLocalOutputSpeed),
+            ("usage.localOutputSpeedWatch", testLocalOutputSpeedWatch),
             ("quota.refreshFlow", testAccountRefreshFlow)
         ]
         for (name, body) in asyncCases {
@@ -472,6 +474,162 @@ func testLocalTokenUsage() async throws {
     try expect(sample == nil, "unavailable directory does not fabricate zero")
 }
 
+func testLocalOutputSpeed() async throws {
+    let manager = FileManager.default
+    let root = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? manager.removeItem(at: root) }
+    let sessions = root.appendingPathComponent("sessions")
+    let archive = root.appendingPathComponent("archived_sessions")
+    let desktop = root.appendingPathComponent("desktop")
+    for directory in [sessions, archive, desktop] {
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    let history = root.appendingPathComponent("meter/output-token-speed.json")
+    let now = Date(timeIntervalSince1970: 1_795_068_000)
+    let first = OutputSpeedFixture(end: now.addingTimeInterval(-60), id: "first")
+    let second = OutputSpeedFixture(end: now.addingTimeInterval(-10), id: "second")
+    let unsupported = OutputSpeedFixture(end: now.addingTimeInterval(-5), id: "unsupported")
+
+    let session = sessions.appendingPathComponent("first.jsonl")
+    let copy = archive.appendingPathComponent("copy.jsonl")
+    let unsupportedFile = sessions.appendingPathComponent("unsupported.jsonl")
+    let firstRollout = try first.rollout()
+    try Data(firstRollout.utf8).write(to: session)
+    try Data(firstRollout.utf8).write(to: copy)
+    try Data(unsupported.rollout().utf8).write(to: unsupportedFile)
+    let desktopFile = desktop.appendingPathComponent("codex-desktop-test.log")
+    let remoteWitness = unsupported.desktopLog.replacingOccurrences(of: "hostId=local", with: "hostId=remote")
+    try Data((first.desktopLog + remoteWitness).utf8).write(to: desktopFile)
+    for file in [session, copy, unsupportedFile, desktopFile] {
+        try manager.setAttributes([.modificationDate: now], ofItemAtPath: file.path)
+    }
+    let tracker = LocalTokenUsageTracker(root: root, desktopLogs: desktop, outputHistoryURL: history)
+    var sample = await tracker.sampleWithOutputSpeeds(now: now)
+    try expect(sample.speeds.count == 1, "require a matching local stream and deduplicate archives")
+    try expect(sample.speeds.last?.outputTokens == 360, "use output tokens and count reasoning only once")
+    try expect(sample.speeds.last?.tokensPerSecond == 60, "use six seconds of output and exclude tool execution")
+    try expect(sample.speeds.last?.completedAt == first.end, "use output end rather than usage write time")
+    try expect(sample.usage?.tokens == 16_720, "daily token counting still includes input and deduplicates copies")
+
+    let secondFile = sessions.appendingPathComponent("second.jsonl")
+    let secondRollout = try second.rollout()
+    try Data(secondRollout.dropLast().utf8).write(to: secondFile)
+    try manager.setAttributes([.modificationDate: now], ofItemAtPath: secondFile.path)
+    let desktopHandle = try FileHandle(forWritingTo: desktopFile)
+    try desktopHandle.seekToEnd()
+    try desktopHandle.write(contentsOf: Data(second.desktopLog.utf8))
+    try desktopHandle.close()
+    try manager.setAttributes([.modificationDate: now], ofItemAtPath: desktopFile.path)
+    sample = await tracker.sampleWithOutputSpeeds(now: now)
+    try expect(sample.speeds.last?.responseID == "first", "ignore an incomplete usage line")
+    let sessionHandle = try FileHandle(forWritingTo: secondFile)
+    try sessionHandle.seekToEnd()
+    try sessionHandle.write(contentsOf: Data("\n".utf8))
+    try sessionHandle.close()
+    try manager.setAttributes([.modificationDate: now], ofItemAtPath: secondFile.path)
+    sample = await tracker.sampleWithOutputSpeeds(now: now)
+    try expect(sample.speeds.map(\.responseID) == ["first", "second"], "publish latest completed sample once evidence is complete")
+
+    try manager.removeItem(at: sessions)
+    try manager.removeItem(at: desktop)
+    let restarted = LocalTokenUsageTracker(root: root, desktopLogs: desktop, outputHistoryURL: history)
+    sample = await restarted.sampleWithOutputSpeeds(now: now.addingTimeInterval(3600))
+    try expect(sample.speeds.map(\.responseID) == ["first", "second"] && sample.usage == nil,
+               "persist history across a restart even when source logs are unavailable")
+    sample = await restarted.sampleWithOutputSpeeds(now: now.addingTimeInterval(8 * 86400))
+    try expect(sample.speeds.map(\.responseID) == ["second"], "older history expires while the latest valid readout survives")
+}
+
+func testLocalOutputSpeedWatch() async throws {
+    let manager = FileManager.default
+    let root = manager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? manager.removeItem(at: root) }
+    let sessions = root.appendingPathComponent("sessions")
+    let desktop = root.appendingPathComponent("desktop")
+    for directory in [sessions, desktop] {
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    let end = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down) - 12)
+    let fixture = OutputSpeedFixture(end: end, id: "live")
+    // Create the empty file before watching, with a writer that stays open.
+    let log = desktop.appendingPathComponent("codex-desktop-live.log")
+    try Data().write(to: log)
+    try Data(fixture.rollout().utf8).write(to: sessions.appendingPathComponent("live.jsonl"))
+    let tracker = LocalTokenUsageTracker(root: root, desktopLogs: desktop)
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask {
+            var changes = await tracker.changes().makeAsyncIterator()
+            _ = await changes.next()
+            let initial = await tracker.sampleWithOutputSpeeds()
+            try expect(initial.speeds.isEmpty, "a completed usage line alone cannot establish output speed")
+            let handle = try FileHandle(forWritingTo: log)
+            defer { try? handle.close() }
+            try handle.write(contentsOf: Data(fixture.desktopLog.utf8))
+            while await changes.next() != nil {
+                let sample = await tracker.sampleWithOutputSpeeds()
+                if sample.speeds.last?.responseID == "live" {
+                    try expect(sample.speeds.last?.tokensPerSecond == 60, "late desktop timing can corroborate already written usage")
+                    return
+                }
+            }
+            try Task.checkCancellation()
+            throw ExpectationFailure(message: "file changes stream ended before output speed was available")
+        }
+        group.addTask {
+            try await Task.sleep(for: .seconds(3))
+            throw ExpectationFailure(message: "desktop append did not refresh output speed")
+        }
+        defer { group.cancelAll() }
+        _ = try await group.next()
+    }
+}
+
+private struct OutputSpeedFixture {
+    let end: Date
+    let id: String
+    private var thread: String { "thread-\(id)" }
+    private var turn: String { "turn-\(id)" }
+    private var item: String { "reasoning-\(id)" }
+
+    func rollout() throws -> String {
+        var lines = ""
+        func add(_ type: String, _ offset: Double, _ payload: [String: Any]) throws {
+            let object: [String: Any] = ["type": type, "timestamp": stamp(offset), "payload": payload]
+            lines += String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self) + "\n"
+        }
+        func ms(_ offset: Double) -> Int64 { Int64(((end.timeIntervalSince1970 + offset) * 1000).rounded()) }
+        try add("session_meta", -9, ["id": thread, "model_provider": "openai"])
+        try add("event_msg", -8, ["type": "task_started", "turn_id": turn])
+        try add("event_msg", -1, ["type": "item_completed", "thread_id": thread, "turn_id": turn,
+            "item": ["type": "Reasoning", "id": item], "started_at_ms": ms(-6), "completed_at_ms": ms(-1)])
+        try add("response_item", -1, ["type": "reasoning", "id": item])
+        try add("response_item", 0, ["type": "custom_tool_call", "id": "tool-\(id)"])
+        try add("event_msg", 1, ["type": "item_completed", "thread_id": thread, "turn_id": turn,
+            "item": ["type": "CommandExecution", "id": "tool-\(id)"], "started_at_ms": ms(0), "completed_at_ms": ms(1)])
+        try add("response_item", 1, ["type": "custom_tool_call_output", "id": "result-\(id)"])
+        try add("event_msg", 2, ["type": "token_count", "info": ["total_token_usage": ["total_tokens": 8360],
+                                                                    "last_token_usage": ["total_tokens": 8360]]])
+        try add("token_usage_record", 2, ["thread_id": thread, "turn_id": turn, "response_id": id,
+            "usage": ["input_tokens": 8000, "output_tokens": 360, "reasoning_output_tokens": 200, "total_tokens": 8360]])
+        return lines
+    }
+
+    var desktopLog: String {
+        """
+        \(stamp(-9)) info [AppServerConnection] mcp_server_startup_status_updated error=null failureReason=null hostId=local server=fixture status=ready threadId=\(thread)
+        \(stamp(0)) info [host-app-server-manager] Reasoning summary part added payload={"threadId":"\(thread)","turnId":"\(turn)","itemId":"\(item)","summaryIndex":0}
+        \(stamp(0.5)) info [host-app-server-manager] Reasoning summary item completed itemId=\(item) summary=["fixture"] summaryPartCount=1 threadId=\(thread) turnId=\(turn)
+
+        """
+    }
+
+    private func stamp(_ offset: Double) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: end.addingTimeInterval(offset))
+    }
+}
+
 func testWeeklyTokenTotals() throws {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "America/Los_Angeles")!
@@ -651,7 +809,8 @@ func testAccountRefreshFlow() async throws {
     store.save(PersistedQuotaState(accountId: "fixture-first", lastSnapshot: oldSnapshot,
                                   history: [QuotaHistoryPoint(snapshot: oldSnapshot)]))
     let client = CodexAppServerClient()
-    let service = CodexQuotaService(settings: settings, client: client, store: store, notifications: NotificationService())
+    let service = CodexQuotaService(settings: settings, client: client, store: store, notifications: NotificationService(),
+                                    localUsageTracker: LocalTokenUsageTracker(root: root))
     do {
         try mode("first")
         service.start()

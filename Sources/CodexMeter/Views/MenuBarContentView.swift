@@ -15,7 +15,12 @@ struct MenuBarContentView: View {
             )
             .padding(.bottom, 2)
 
-            VStack(alignment: .leading, spacing: 8) { content }
+            VStack(alignment: .leading, spacing: 8) {
+                if viewModel.emptyKind != nil || !viewModel.showsQuota {
+                    tokenRateCard
+                }
+                content
+            }
 
             footer
         }
@@ -41,6 +46,7 @@ struct MenuBarContentView: View {
             .meterCard(padding: 14)
         } else if viewModel.showsQuota {
             StatCardsView(todayTitle: viewModel.todayTokenTitle, todayTokenText: viewModel.todayTokenText, weekTokenText: viewModel.weekTokenText)
+            tokenRateCard
             Divider()
             PlanCardView(viewModel: viewModel)
             Divider()
@@ -59,6 +65,10 @@ struct MenuBarContentView: View {
             }
             .meterCard(padding: 14)
         }
+    }
+
+    private var tokenRateCard: some View {
+        TokenRateCardView(speeds: viewModel.service.outputTokenSpeeds)
     }
 
     private var footer: some View {

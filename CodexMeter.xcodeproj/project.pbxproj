@@ -23,6 +23,7 @@
 		B8CB2695C69A451F8613BF72 /* CodexQuotaService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A09ADC7376254A7CA212984A /* CodexQuotaService.swift */; };
 		7860A5DC7CB840ADAEC469C5 /* HistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01138426AE4B40B481170408 /* HistoryStore.swift */; };
 		5A91BBE9F1B04092B8F17EE1 /* LocalTokenUsageTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 732BCC9252EC43B698CD9678 /* LocalTokenUsageTracker.swift */; };
+		CA18D8F84EEF4B2B958E4E20 /* OutputTokenSpeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5AA8D35314C4C77BC3567E8 /* OutputTokenSpeed.swift */; };
 		B647994D82B243DD94D3A78F /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D7FC2C29B8C40FD908AAF2B /* JSONValue.swift */; };
 		029E1D0FF1354476AAB1FC50 /* LaunchAtLoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31F0977677934C549C2F759A /* LaunchAtLoginService.swift */; };
 		C77A2E70AF254B2D8D6BE0E0 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C22D933FB7A548B5978AFCDA /* NotificationService.swift */; };
@@ -76,6 +77,7 @@
 		A09ADC7376254A7CA212984A /* CodexQuotaService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexQuotaService.swift; sourceTree = "<group>"; };
 		01138426AE4B40B481170408 /* HistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryStore.swift; sourceTree = "<group>"; };
 		732BCC9252EC43B698CD9678 /* LocalTokenUsageTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalTokenUsageTracker.swift; sourceTree = "<group>"; };
+		F5AA8D35314C4C77BC3567E8 /* OutputTokenSpeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutputTokenSpeed.swift; sourceTree = "<group>"; };
 		6D7FC2C29B8C40FD908AAF2B /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		31F0977677934C549C2F759A /* LaunchAtLoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginService.swift; sourceTree = "<group>"; };
 		C22D933FB7A548B5978AFCDA /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
@@ -180,6 +182,7 @@
 				A09ADC7376254A7CA212984A /* CodexQuotaService.swift */,
 				01138426AE4B40B481170408 /* HistoryStore.swift */,
 				732BCC9252EC43B698CD9678 /* LocalTokenUsageTracker.swift */,
+				F5AA8D35314C4C77BC3567E8 /* OutputTokenSpeed.swift */,
 				6D7FC2C29B8C40FD908AAF2B /* JSONValue.swift */,
 				31F0977677934C549C2F759A /* LaunchAtLoginService.swift */,
 				C22D933FB7A548B5978AFCDA /* NotificationService.swift */,
@@ -381,6 +384,7 @@
 				B8CB2695C69A451F8613BF72 /* CodexQuotaService.swift in Sources */,
 				7860A5DC7CB840ADAEC469C5 /* HistoryStore.swift in Sources */,
 				5A91BBE9F1B04092B8F17EE1 /* LocalTokenUsageTracker.swift in Sources */,
+				CA18D8F84EEF4B2B958E4E20 /* OutputTokenSpeed.swift in Sources */,
 				B647994D82B243DD94D3A78F /* JSONValue.swift in Sources */,
 				029E1D0FF1354476AAB1FC50 /* LaunchAtLoginService.swift in Sources */,
 				C77A2E70AF254B2D8D6BE0E0 /* NotificationService.swift in Sources */,
@@ -428,6 +432,7 @@
 				B8CB2695C69A451F8613BF72 /* CodexQuotaService.swift in Sources */,
 				7860A5DC7CB840ADAEC469C5 /* HistoryStore.swift in Sources */,
 				5A91BBE9F1B04092B8F17EE1 /* LocalTokenUsageTracker.swift in Sources */,
+				CA18D8F84EEF4B2B958E4E20 /* OutputTokenSpeed.swift in Sources */,
 				B647994D82B243DD94D3A78F /* JSONValue.swift in Sources */,
 				029E1D0FF1354476AAB1FC50 /* LaunchAtLoginService.swift in Sources */,
 				C77A2E70AF254B2D8D6BE0E0 /* NotificationService.swift in Sources */,
@@ -492,7 +497,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -502,7 +507,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.CodexMeter;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -518,7 +523,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 4;
+				CURRENT_PROJECT_VERSION = 5;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -528,7 +533,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.local.CodexMeter;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

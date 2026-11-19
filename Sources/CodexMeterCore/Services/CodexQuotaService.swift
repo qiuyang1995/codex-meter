@@ -16,7 +16,8 @@ public final class CodexQuotaService: ObservableObject {
     @Published public private(set) var dailyTokenUsage: [AccountTokenUsageDailyBucket] = []
 
     @Published public private(set) var localTodayUsage: LocalTodayTokenUsage?
-    private let localUsageTracker = LocalTokenUsageTracker()
+    @Published public private(set) var outputTokenSpeeds: [OutputTokenSpeed] = []
+    private let localUsageTracker: LocalTokenUsageTracker
     private var localUsageTask: Task<Void, Never>?
 
     @Published public private(set) var resetCredits: RateLimitResetCredits?
@@ -44,13 +45,19 @@ public final class CodexQuotaService: ObservableObject {
         locator: CodexExecutableLocator = CodexExecutableLocator(),
         client: CodexAppServerClient = CodexAppServerClient(),
         store: HistoryStore = .shared,
-        notifications: NotificationService
+        notifications: NotificationService,
+        localUsageTracker: LocalTokenUsageTracker? = nil
     ) {
         self.settings = settings
         self.locator = locator
         self.client = client
         self.store = store
         self.notifications = notifications
+        self.localUsageTracker = localUsageTracker ?? LocalTokenUsageTracker(
+            desktopLogs: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Logs/com.openai.codex", isDirectory: true),
+            outputHistoryURL: HistoryStore.applicationSupportDirectory().appendingPathComponent("output-token-speed.json")
+        )
         settingsCancellable = settings.$refreshInterval
             .dropFirst()
             .sink { [weak self] _ in
@@ -65,6 +72,7 @@ public final class CodexQuotaService: ObservableObject {
         history: [QuotaHistoryPoint],
         dailyTokenUsage: [AccountTokenUsageDailyBucket] = [],
         localTodayUsage: LocalTodayTokenUsage? = nil,
+        outputTokenSpeeds: [OutputTokenSpeed] = [],
         resetCredits: RateLimitResetCredits? = nil,
         connectionState: CodexConnectionState,
         lastSuccessfulRefresh: Date?
@@ -73,6 +81,7 @@ public final class CodexQuotaService: ObservableObject {
         self.history = history
         self.dailyTokenUsage = dailyTokenUsage
         self.localTodayUsage = localTodayUsage
+        self.outputTokenSpeeds = outputTokenSpeeds
         self.resetCredits = resetCredits
         self.connectionState = connectionState
         self.lastSuccessfulRefresh = lastSuccessfulRefresh
@@ -93,13 +102,20 @@ public final class CodexQuotaService: ObservableObject {
         }
         Task { await refresh() }
         restartPolling()
+        startLocalUsageTracking()
+    }
+
+    private func startLocalUsageTracking() {
         localUsageTask?.cancel()
         localUsageTask = Task { [weak self, localUsageTracker] in
-            while !Task.isCancelled {
-                let usage = await localUsageTracker.sample()
+            let saved = await localUsageTracker.savedOutputSpeeds()
+            if !Task.isCancelled, self?.outputTokenSpeeds != saved { self?.outputTokenSpeeds = saved }
+            for await _ in await localUsageTracker.changes() {
+                if Task.isCancelled { return }
+                let sample = await localUsageTracker.sampleWithOutputSpeeds()
                 guard let self, !self.stopped, !Task.isCancelled else { return }
-                if self.localTodayUsage != usage { self.localTodayUsage = usage }
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if self.localTodayUsage != sample.usage { self.localTodayUsage = sample.usage }
+                if self.outputTokenSpeeds != sample.speeds { self.outputTokenSpeeds = sample.speeds }
             }
         }
     }
@@ -348,6 +364,7 @@ public final class CodexQuotaService: ObservableObject {
         snapshot = nil
         history = []
         dailyTokenUsage = []
+        localUsageTask?.cancel()
         localTodayUsage = nil
         lifetimeTokens = nil
         resetCredits = nil
@@ -358,6 +375,7 @@ public final class CodexQuotaService: ObservableObject {
         store.save(persist)
         await client.stop()
         await localUsageTracker.reset()
+        if !stopped { startLocalUsageTracking() }
         guard let executable = executableURL ?? CodexExecutableLocator().resolve() else {
             connectionState = .missingCLI
             return

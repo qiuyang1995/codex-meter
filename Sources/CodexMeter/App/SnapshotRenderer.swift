@@ -52,6 +52,15 @@ enum SnapshotRenderer {
         let previewTokens: [Int64] = CommandLine.arguments.contains("--snapshot-week")
             ? (0..<180).map { Int64((($0 * 13) % 31 + 1) * 100_000) }
             : [82_340, 126_780, 94_210, 188_460, 142_990, 231_570, 167_320]
+        var speeds: [OutputTokenSpeed] = []
+        if CommandLine.arguments.contains("--snapshot-rate") {
+            speeds = (0..<24).map { index in
+                let end = now.addingTimeInterval(Double(index - 25) * 120)
+                let tokens = 320 + (index * 127) % 500
+                return OutputTokenSpeed(responseID: "preview-\(index)", completedAt: end,
+                                        outputTokens: Int64(tokens), duration: 12)
+            }
+        }
         service.injectPreviewState(
             snapshot: CommandLine.arguments.contains("--snapshot-missing") ? nil : snapshot,
             history: history,
@@ -63,6 +72,7 @@ enum SnapshotRenderer {
                 )
             },
             localTodayUsage: CommandLine.arguments.contains("--snapshot-live") ? LocalTodayTokenUsage(day: calendar.startOfDay(for: now), tokens: 9_876_543, yesterdayTokens: 1_234_567) : nil,
+            outputTokenSpeeds: speeds,
             resetCredits: CommandLine.arguments.contains("--snapshot-resets") ? RateLimitResetCredits(availableCount: 2, credits: [
                 RateLimitResetCredit(id: "preview-1", resetType: "codexRateLimits", status: "available", expiresAt: now.addingTimeInterval(18 * 86400)),
                 RateLimitResetCredit(id: "preview-2", resetType: "codexRateLimits", status: "available", expiresAt: now.addingTimeInterval(19 * 86400))
